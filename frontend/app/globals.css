@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f4f6f8;
+  --bg-soft: #eef2f6;
+  --card: #ffffff;
+  --text: #102035;
+  --muted: #64748b;
+  --line: #d9e2ec;
+  --primary: #0f766e;
+  --primary-soft: #ccfbf1;
+  --accent: #f59e0b;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at 10% 0%, #d7f4ef 0, transparent 40%),
+    radial-gradient(circle at 90% 10%, #fee9c3 0, transparent 42%),
+    var(--bg);
+  color: var(--text);
+}
+
+body {
+  min-height: 100vh;
+}
+
+.app-shell {
+  @apply min-h-screen;
+}
+
+.app-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  @apply rounded-2xl shadow-sm;
+}
+
+.app-section-title {
+  @apply text-sm font-semibold tracking-wide uppercase;
+  color: var(--muted);
+}
+
+.app-input {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  @apply rounded-xl px-3 py-2.5 text-sm outline-none transition;
+}
+
+.app-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+}
+
+/* Fix Leaflet z-index inside Next.js layouts */
+.leaflet-container {
+  z-index: 0;
+}
+
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 0;
+}
+
+.leaflet-control {
+  z-index: 1;
+}
