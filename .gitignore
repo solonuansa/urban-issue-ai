@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.env
+*.db
+
+# AI model weights
+ai/cv_model/weights/*.pt
+ai/cv_model/weights/*.pth
+
+# Uploads
+backend/uploads/
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db

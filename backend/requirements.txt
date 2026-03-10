@@ -1,0 +1,9 @@
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+sqlalchemy==2.0.29
+python-multipart==0.0.9
+pillow==10.3.0
+torch==2.2.2
+torchvision==0.17.2
+python-dotenv==1.0.1
+psycopg2-binary==2.9.9
