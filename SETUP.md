@@ -53,8 +53,10 @@ npm install
 
 ```env
 DATABASE_URL=sqlite:///./civic_reports.db
-MODEL_PATH=ai/cv_model/weights/model.pt
-UPLOAD_DIR=uploads
+MODEL_PATH=../ai/cv_model/weights/model.pt
+UPLOAD_DIR=./uploads
+MAX_FILE_SIZE_MB=5
+BACKEND_CORS_ORIGINS=http://localhost:3000
 ```
 
 Catatan:
@@ -120,6 +122,7 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 - `UPLOAD_DIR`
 
 5. (Opsional tapi disarankan) Atur CORS backend agar hanya mengizinkan domain frontend Vercel.
+   - Gunakan `BACKEND_CORS_ORIGINS=https://<frontend-vercel-domain>`
 
 ## 7. Deployment Frontend ke Vercel
 

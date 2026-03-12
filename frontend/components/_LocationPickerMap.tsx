@@ -90,11 +90,18 @@ export default function LocationPickerMap({
     onChangeRef.current = onChange;
   }, [onChange]);
 
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+      }
+    };
+  }, []);
+
   const reverseGeocode = useCallback(async (lat: number, lng: number) => {
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=id,en`,
-        { headers: { "User-Agent": "CivicAI-urban-issue-reporting/1.0" } }
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=id,en`
       );
       const data = await res.json();
       const addr: string = data.display_name ?? `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
@@ -130,8 +137,7 @@ export default function LocationPickerMap({
       setSearching(true);
       try {
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&accept-language=id,en`,
-          { headers: { "User-Agent": "CivicAI-urban-issue-reporting/1.0" } }
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&accept-language=id,en`
         );
         const data: SearchResult[] = await res.json();
         setSearchResults(data);

@@ -1,21 +1,37 @@
 """
-CV Service – classifies an image and returns issue type + severity.
+CV service for issue classification.
 
-MVP Strategy:
-  - If model weights exist → use YOLO/torch inference via ai/cv_model/inference.py
-  - Otherwise → use a rule-based heuristic from image metadata as a placeholder
-    so the rest of the pipeline (scoring, response, DB) can be tested end-to-end.
+Strategy:
+1. If model weights and inference module are available, run real inference.
+2. Otherwise, return a deterministic mock result for MVP flow testing.
 """
 
-import os
+from __future__ import annotations
 
-from app.config import MODEL_PATH
+import importlib.util
+import os
+from pathlib import Path
+from typing import Any
+
+from app.config import MODEL_PATH, PROJECT_ROOT
+
+
+def _load_inference_runner() -> Any | None:
+    inference_file = PROJECT_ROOT / "ai" / "cv_model" / "inference.py"
+    if not inference_file.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location("urban_issue_ai_inference", inference_file)
+    if spec is None or spec.loader is None:
+        return None
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "run_inference", None)
 
 
 def classify_image(image_path: str) -> dict:
     """
-    Classify the given image.
-
     Returns:
         {
             "issue_type": "pothole" | "garbage",
@@ -23,14 +39,12 @@ def classify_image(image_path: str) -> dict:
             "confidence": float
         }
     """
-    # Use real model if weights are available
-    if os.path.exists(MODEL_PATH):
-        from ai.cv_model.inference import run_inference
-        return run_inference(image_path, MODEL_PATH)
+    model_path = Path(MODEL_PATH)
+    run_inference = _load_inference_runner()
+    if run_inference and model_path.exists():
+        return run_inference(image_path, str(model_path))
 
-    # ── MVP Placeholder ──────────────────────────────────────────────────────
-    # Derive a deterministic-but-varied mock result from the image file size so
-    # that different uploads produce different labels (useful for testing).
+    # Deterministic mock output based on file size for end-to-end testing.
     try:
         file_size = os.path.getsize(image_path)
     except OSError:
@@ -41,7 +55,7 @@ def classify_image(image_path: str) -> dict:
 
     issue_type = issue_types[file_size % 2]
     severity = severity_levels[file_size % 3]
-    confidence = round(0.55 + (file_size % 40) / 100, 2)  # 0.55 – 0.94
+    confidence = round(0.55 + (file_size % 40) / 100, 2)
 
     return {
         "issue_type": issue_type,

@@ -1,10 +1,11 @@
 import os
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.config import UPLOAD_DIR
+from app.config import MAX_FILE_SIZE_MB, UPLOAD_DIR
 from app.core.database import get_db
 from app.models.report_model import Report
 from app.services.cv_service import classify_image
@@ -15,6 +16,9 @@ from app.utils.geo_utils import haversine_distance
 router = APIRouter()
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_ROOT = Path(UPLOAD_DIR)
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 @router.post("/submit")
@@ -32,16 +36,43 @@ async def submit_report(
     - Generates an auto response
     - Saves report to database
     """
-    # 1. Save image to disk
-    ext = os.path.splitext(image.filename)[1] if image.filename else ".jpg"
+    # 1. Validate and save image to disk
+    content_type = image.content_type or ""
+    if content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported image type. Use JPG, PNG, or WEBP.",
+        )
+
+    ext = os.path.splitext(image.filename)[1].lower() if image.filename else ".jpg"
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported image extension. Use .jpg, .jpeg, .png, or .webp.",
+        )
+
     filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    contents = await image.read()
-    with open(file_path, "wb") as f:
-        f.write(contents)
+    file_path = UPLOAD_ROOT / filename
+    max_size_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+    total_size = 0
+
+    with file_path.open("wb") as f:
+        while True:
+            chunk = await image.read(1024 * 1024)
+            if not chunk:
+                break
+            total_size += len(chunk)
+            if total_size > max_size_bytes:
+                f.close()
+                file_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size is {MAX_FILE_SIZE_MB} MB.",
+                )
+            f.write(chunk)
 
     # 2. Classify image via CV service
-    cv_result = classify_image(file_path)
+    cv_result = classify_image(str(file_path))
 
     # 3. Count nearby repeat reports (within 500 m, same issue type)
     nearby = db.query(Report).filter(Report.issue_type == cv_result["issue_type"]).all()
@@ -59,6 +90,8 @@ async def submit_report(
         cv_result["issue_type"], cv_result["severity"], urgency["priority_label"]
     )
 
+    image_public_url = f"/uploads/{filename}"
+
     # 6. Persist to database
     report = Report(
         issue_type=cv_result["issue_type"],
@@ -67,7 +100,7 @@ async def submit_report(
         priority_label=urgency["priority_label"],
         latitude=latitude,
         longitude=longitude,
-        image_url=file_path,
+        image_url=image_public_url,
         auto_response=auto_response,
     )
     db.add(report)
