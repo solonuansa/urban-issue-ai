@@ -68,6 +68,24 @@ export interface ReportMetricsResponse {
   }>;
 }
 
+export interface OperatorUser {
+  id: number;
+  full_name: string;
+  email: string;
+  role: "operator" | "admin";
+}
+
+export interface ReportAuditLog {
+  id: number;
+  report_id: number;
+  previous_status?: ReportStatus | null;
+  new_status?: ReportStatus | null;
+  changed_by_user_id: number;
+  assigned_to_user_id?: number | null;
+  note?: string | null;
+  created_at: string;
+}
+
 type ApiErrorPayload = {
   detail?: string;
   message?: string;
@@ -196,10 +214,52 @@ export async function updateReportStatus(payload: {
   return (await res.json()) as { message: string; report: ReportData };
 }
 
+export async function getOperators(): Promise<{ operators: OperatorUser[] }> {
+  const res = await fetch(`${BASE_URL}/api/reports/operators`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { operators: OperatorUser[] };
+}
+
+export async function assignReportOperator(payload: {
+  reportId: number;
+  assigned_to_user_id: number;
+  note?: string;
+}): Promise<{ message: string; report: ReportData }> {
+  const form = new FormData();
+  form.append("assigned_to_user_id", String(payload.assigned_to_user_id));
+  if (payload.note) form.append("note", payload.note);
+
+  const res = await fetch(`${BASE_URL}/api/reports/${payload.reportId}/assign`, {
+    method: "PATCH",
+    headers: withAuth(),
+    body: form,
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { message: string; report: ReportData };
+}
+
+export async function getReportAuditLogs(reportId: number): Promise<{ logs: ReportAuditLog[] }> {
+  const res = await fetch(`${BASE_URL}/api/reports/${reportId}/audit`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { logs: ReportAuditLog[] };
+}
+
 export async function getReportMetrics(): Promise<ReportMetricsResponse> {
   const res = await fetch(`${BASE_URL}/api/reports/metrics/summary`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as ReportMetricsResponse;
+}
+
+export async function exportReportMetricsCsv(): Promise<Blob> {
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/export.csv`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return await res.blob();
 }

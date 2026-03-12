@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import type { Variants } from "framer-motion";
-import { RotateCw, Plus, ShieldAlert } from "lucide-react";
+import { RotateCw, Plus, ShieldAlert, Download, ClipboardList } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -25,9 +25,15 @@ import {
   getReportMetrics,
   getReports,
   updateReportStatus,
+  assignReportOperator,
+  exportReportMetricsCsv,
+  getOperators,
+  getReportAuditLogs,
   type ReportData as Report,
   type ReportMetricsResponse,
   type ReportStatus,
+  type OperatorUser,
+  type ReportAuditLog,
 } from "@/services/api";
 
 const PRIORITY_COLORS = { HIGH: "#ef4444", MEDIUM: "#f59e0b", LOW: "#14b8a6" };
@@ -70,7 +76,7 @@ function SkeletonRows() {
     <>
       {[...Array(6)].map((_, i) => (
         <tr key={i} className="border-b border-slate-100">
-          {[35, 70, 60, 50, 55, 80, 90, 60].map((w, j) => (
+          {[35, 70, 60, 50, 55, 80, 90, 90, 60].map((w, j) => (
             <td key={j} className="px-4 py-3">
               <div className="h-4 bg-slate-200 rounded animate-pulse" style={{ width: `${w}%` }} />
             </td>
@@ -86,6 +92,7 @@ export default function DashboardPage() {
   const [me, setMe] = useState<AuthUser | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [metrics, setMetrics] = useState<ReportMetricsResponse | null>(null);
+  const [operators, setOperators] = useState<OperatorUser[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<ReportStatus | "ALL">("ALL");
   const [loading, setLoading] = useState(true);
@@ -93,6 +100,11 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [pendingStatusId, setPendingStatusId] = useState<number | null>(null);
+  const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
+  const [assigneeByReport, setAssigneeByReport] = useState<Record<number, number | null>>({});
+  const [auditTarget, setAuditTarget] = useState<number | null>(null);
+  const [auditLogs, setAuditLogs] = useState<ReportAuditLog[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const fetchData = useCallback(
     async (isRefresh = false) => {
@@ -108,15 +120,26 @@ export default function DashboardPage() {
           return;
         }
 
-        const [reportRes, metricRes] = await Promise.all([
+        const [reportRes, metricRes, operatorRes] = await Promise.all([
           getReports({
             priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
             status: statusFilter,
           }),
           getReportMetrics(),
+          getOperators(),
         ]);
         setReports(reportRes.reports);
         setMetrics(metricRes);
+        setOperators(operatorRes.operators);
+        setAssigneeByReport((prev) => {
+          const next = { ...prev };
+          for (const report of reportRes.reports) {
+            if (!(report.id in next)) {
+              next[report.id] = report.assigned_to_user_id ?? null;
+            }
+          }
+          return next;
+        });
         setError(null);
         setLastUpdated(new Date());
       } catch (e) {
@@ -194,6 +217,58 @@ export default function DashboardPage() {
     }
   };
 
+  const assignOperator = async (report: Report) => {
+    const assignee = assigneeByReport[report.id];
+    if (!assignee) {
+      setError("Select an operator before assigning.");
+      return;
+    }
+
+    setPendingAssignId(report.id);
+    try {
+      await assignReportOperator({
+        reportId: report.id,
+        assigned_to_user_id: Number(assignee),
+      });
+      await fetchData(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to assign operator.";
+      setError(message);
+    } finally {
+      setPendingAssignId(null);
+    }
+  };
+
+  const openAudit = async (reportId: number) => {
+    setAuditTarget(reportId);
+    setAuditLoading(true);
+    try {
+      const res = await getReportAuditLogs(reportId);
+      setAuditLogs(res.logs);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to load audit logs.";
+      setError(message);
+      setAuditLogs([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const exportCsv = async () => {
+    try {
+      const blob = await exportReportMetricsCsv();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "report_analytics.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to export CSV.";
+      setError(message);
+    }
+  };
+
   if (me?.role === "citizen") {
     return (
       <div className="max-w-3xl mx-auto p-8">
@@ -241,6 +316,13 @@ export default function DashboardPage() {
               <Plus className="w-4 h-4" />
               New Report
             </Link>
+            <button
+              onClick={exportCsv}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
           </div>
         </div>
       </motion.section>
@@ -351,7 +433,7 @@ export default function DashboardPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80">
-                {["ID", "Type", "Severity", "Score", "Priority", "Status", "Action", "Date"].map((h) => (
+                {["ID", "Type", "Severity", "Score", "Priority", "Status", "Assignee", "Action", "Date"].map((h) => (
                   <th key={h} className="px-5 py-3.5 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">
                     {h}
                   </th>
@@ -363,7 +445,7 @@ export default function DashboardPage() {
                 <SkeletonRows />
               ) : reports.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center">
+                  <td colSpan={9} className="px-4 py-16 text-center">
                     <p className="text-sm font-medium text-slate-500">No reports found.</p>
                   </td>
                 </tr>
@@ -377,11 +459,39 @@ export default function DashboardPage() {
                     <td className="px-5 py-4"><PriorityBadge priority={r.priority_label} /></td>
                     <td className="px-5 py-4 text-xs font-bold text-slate-600">{r.status}</td>
                     <td className="px-5 py-4">
-                      {transitionMap[r.status].length === 0 ? (
-                        <span className="text-xs text-slate-400">Final</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {transitionMap[r.status].map((nextStatus) => (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={assigneeByReport[r.id] ?? ""}
+                          onChange={(e) =>
+                            setAssigneeByReport((prev) => ({
+                              ...prev,
+                              [r.id]: e.target.value ? Number(e.target.value) : null,
+                            }))
+                          }
+                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
+                        >
+                          <option value="">Unassigned</option>
+                          {operators.map((op) => (
+                            <option key={op.id} value={op.id}>
+                              {op.full_name} ({op.role})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => assignOperator(r)}
+                          disabled={pendingAssignId === r.id}
+                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Assign
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex flex-wrap gap-1">
+                        {transitionMap[r.status].length === 0 ? (
+                          <span className="text-xs text-slate-400">Final</span>
+                        ) : (
+                          transitionMap[r.status].map((nextStatus) => (
                             <button
                               key={nextStatus}
                               disabled={pendingStatusId === r.id}
@@ -390,9 +500,16 @@ export default function DashboardPage() {
                             >
                               {nextStatus}
                             </button>
-                          ))}
-                        </div>
-                      )}
+                          ))
+                        )}
+                        <button
+                          onClick={() => openAudit(r.id)}
+                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
+                        >
+                          <ClipboardList className="w-3 h-3" />
+                          Audit
+                        </button>
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-xs font-medium text-slate-500">
                       {new Date(r.created_at).toLocaleDateString("en-GB", {
@@ -408,6 +525,46 @@ export default function DashboardPage() {
           </table>
         </div>
       </motion.section>
+
+      {auditTarget && (
+        <motion.section variants={itemVariants} className="app-card p-5 md:p-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base font-semibold text-slate-900">Audit Log Report #{auditTarget}</h2>
+            <button className="text-xs font-semibold text-slate-500 hover:text-slate-700" onClick={() => setAuditTarget(null)}>
+              Close
+            </button>
+          </div>
+          {auditLoading ? (
+            <p className="text-sm text-slate-500">Loading logs...</p>
+          ) : auditLogs.length === 0 ? (
+            <p className="text-sm text-slate-500">No audit logs.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    {["Time", "Prev", "New", "Changed By", "Assigned", "Note"].map((h) => (
+                      <th key={h} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLogs.map((log) => (
+                    <tr key={log.id} className="border-b border-slate-100">
+                      <td className="px-3 py-2 text-xs text-slate-600">{new Date(log.created_at).toLocaleString("en-GB")}</td>
+                      <td className="px-3 py-2 text-xs">{log.previous_status ?? "-"}</td>
+                      <td className="px-3 py-2 text-xs">{log.new_status ?? "-"}</td>
+                      <td className="px-3 py-2 text-xs">#{log.changed_by_user_id}</td>
+                      <td className="px-3 py-2 text-xs">{log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600">{log.note ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </motion.section>
+      )}
     </motion.div>
   );
 }

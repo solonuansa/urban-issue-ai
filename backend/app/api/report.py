@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 import uuid
+import csv
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -13,6 +16,7 @@ from app.config import MAX_FILE_SIZE_MB, REPORT_RATE_LIMIT_PER_MINUTE, UPLOAD_DI
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_operator_or_admin
 from app.models.report_model import Report
+from app.models.report_audit_log import ReportAuditLog
 from app.models.user_model import User
 from app.services.cv_service import classify_image
 from app.services.response_service import generate_response
@@ -34,6 +38,68 @@ VALID_TRANSITIONS = {
 }
 
 
+def _build_metrics_payload(db: Session) -> dict:
+    total_reports = db.query(func.count(Report.id)).scalar() or 0
+    status_counts = dict(
+        db.query(Report.status, func.count(Report.id))
+        .group_by(Report.status)
+        .all()
+    )
+    priority_counts = dict(
+        db.query(Report.priority_label, func.count(Report.id))
+        .group_by(Report.priority_label)
+        .all()
+    )
+
+    fourteen_days_ago = datetime.now(timezone.utc) - timedelta(days=13)
+    incoming_rows = (
+        db.query(func.date(Report.created_at), func.count(Report.id))
+        .filter(Report.created_at >= fourteen_days_ago)
+        .group_by(func.date(Report.created_at))
+        .all()
+    )
+    resolved_rows = (
+        db.query(func.date(Report.resolved_at), func.count(Report.id))
+        .filter(Report.resolved_at.isnot(None))
+        .filter(Report.resolved_at >= fourteen_days_ago)
+        .group_by(func.date(Report.resolved_at))
+        .all()
+    )
+
+    incoming_map = {str(day): count for day, count in incoming_rows}
+    resolved_map = {str(day): count for day, count in resolved_rows}
+
+    trend = []
+    for i in range(14):
+        day = (fourteen_days_ago + timedelta(days=i)).date().isoformat()
+        trend.append(
+            {
+                "date": day,
+                "incoming": int(incoming_map.get(day, 0)),
+                "resolved": int(resolved_map.get(day, 0)),
+            }
+        )
+
+    return {
+        "summary": {
+            "total_reports": int(total_reports),
+            "status_counts": {
+                "NEW": int(status_counts.get("NEW", 0)),
+                "IN_REVIEW": int(status_counts.get("IN_REVIEW", 0)),
+                "IN_PROGRESS": int(status_counts.get("IN_PROGRESS", 0)),
+                "RESOLVED": int(status_counts.get("RESOLVED", 0)),
+                "REJECTED": int(status_counts.get("REJECTED", 0)),
+            },
+            "priority_counts": {
+                "HIGH": int(priority_counts.get("HIGH", 0)),
+                "MEDIUM": int(priority_counts.get("MEDIUM", 0)),
+                "LOW": int(priority_counts.get("LOW", 0)),
+            },
+        },
+        "trend_14d": trend,
+    }
+
+
 def _serialize_report(r: Report) -> dict:
     return {
         "id": r.id,
@@ -52,6 +118,19 @@ def _serialize_report(r: Report) -> dict:
         "resolved_at": r.resolved_at,
         "updated_at": r.updated_at,
         "created_at": r.created_at,
+    }
+
+
+def _serialize_audit_log(log: ReportAuditLog) -> dict:
+    return {
+        "id": log.id,
+        "report_id": log.report_id,
+        "previous_status": log.previous_status,
+        "new_status": log.new_status,
+        "changed_by_user_id": log.changed_by_user_id,
+        "assigned_to_user_id": log.assigned_to_user_id,
+        "note": log.note,
+        "created_at": log.created_at,
     }
 
 
@@ -174,6 +253,30 @@ def get_reports(
     return {"reports": [_serialize_report(r) for r in reports]}
 
 
+@router.get("/operators")
+def get_operator_users(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    users = (
+        db.query(User)
+        .filter(User.role.in_(("operator", "admin")))
+        .order_by(User.full_name.asc())
+        .all()
+    )
+    return {
+        "operators": [
+            {
+                "id": u.id,
+                "full_name": u.full_name,
+                "email": u.email,
+                "role": u.role,
+            }
+            for u in users
+        ]
+    }
+
+
 @router.get("/{report_id}")
 def get_report(
     report_id: int,
@@ -189,6 +292,45 @@ def get_report(
         return {"report": _serialize_report(report)}
 
     raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.patch("/{report_id}/assign")
+def assign_report_operator(
+    report_id: int,
+    assigned_to_user_id: int = Form(...),
+    note: str = Form(default="", max_length=300),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_operator_or_admin),
+):
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    assignee = db.query(User).filter(User.id == assigned_to_user_id).first()
+    if not assignee:
+        raise HTTPException(status_code=404, detail="Assigned user not found")
+    if assignee.role not in ("operator", "admin"):
+        raise HTTPException(status_code=400, detail="Assignee must be operator or admin")
+
+    report.assigned_to_user_id = assignee.id
+    report.updated_at = datetime.now(timezone.utc)
+    db.add(
+        ReportAuditLog(
+            report_id=report.id,
+            previous_status=report.status,
+            new_status=report.status,
+            changed_by_user_id=current_user.id,
+            assigned_to_user_id=assignee.id,
+            note=note.strip() or "Assignee updated",
+        )
+    )
+    db.commit()
+    db.refresh(report)
+
+    return {
+        "message": "Assignee updated",
+        "report": _serialize_report(report),
+    }
 
 
 @router.patch("/{report_id}/status")
@@ -227,6 +369,7 @@ def update_report_status(
             raise HTTPException(status_code=400, detail="Assignee must be operator or admin")
         report.assigned_to_user_id = assigned_to_user_id
 
+    previous_status = report.status
     report.status = status_upper
     report.updated_at = datetime.now(timezone.utc)
 
@@ -235,6 +378,17 @@ def update_report_status(
         report.resolution_note = resolution_note.strip() or report.resolution_note
     elif status_upper == "REJECTED":
         report.resolution_note = resolution_note.strip() or "Rejected by operations team"
+
+    db.add(
+        ReportAuditLog(
+            report_id=report.id,
+            previous_status=previous_status,
+            new_status=status_upper,
+            changed_by_user_id=current_user.id,
+            assigned_to_user_id=report.assigned_to_user_id,
+            note=resolution_note.strip() or None,
+        )
+    )
 
     db.commit()
     db.refresh(report)
@@ -250,67 +404,77 @@ def update_report_status(
     }
 
 
+@router.get("/{report_id}/audit")
+def get_report_audit_logs(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    if current_user.role not in ("operator", "admin") and report.created_by_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    logs = (
+        db.query(ReportAuditLog)
+        .filter(ReportAuditLog.report_id == report_id)
+        .order_by(ReportAuditLog.created_at.desc())
+        .all()
+    )
+
+    return {"logs": [_serialize_audit_log(log) for log in logs]}
+
+
 @router.get("/metrics/summary")
 def get_report_analytics(
     db: Session = Depends(get_db),
     _: User = Depends(require_operator_or_admin),
 ):
-    total_reports = db.query(func.count(Report.id)).scalar() or 0
-    status_counts = dict(
-        db.query(Report.status, func.count(Report.id))
-        .group_by(Report.status)
-        .all()
-    )
-    priority_counts = dict(
-        db.query(Report.priority_label, func.count(Report.id))
-        .group_by(Report.priority_label)
-        .all()
-    )
+    return _build_metrics_payload(db)
 
-    fourteen_days_ago = datetime.now(timezone.utc) - timedelta(days=13)
-    incoming_rows = (
-        db.query(func.date(Report.created_at), func.count(Report.id))
-        .filter(Report.created_at >= fourteen_days_ago)
-        .group_by(func.date(Report.created_at))
-        .all()
+
+@router.get("/metrics/export.csv")
+def export_report_analytics_csv(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    metrics = _build_metrics_payload(db)
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow(["section", "key", "value"])
+    writer.writerow(["summary", "total_reports", metrics["summary"]["total_reports"]])
+
+    for key, value in metrics["summary"]["status_counts"].items():
+        writer.writerow(["status_counts", key, value])
+    for key, value in metrics["summary"]["priority_counts"].items():
+        writer.writerow(["priority_counts", key, value])
+
+    writer.writerow([])
+    writer.writerow(["trend_14d", "date", "incoming", "resolved"])
+    for row in metrics["trend_14d"]:
+        writer.writerow(["trend_14d", row["date"], row["incoming"], row["resolved"]])
+
+    writer.writerow([])
+    writer.writerow(["reports", "id", "status", "priority", "urgency_score", "created_at", "resolved_at"])
+    reports = db.query(Report).order_by(Report.created_at.desc()).all()
+    for r in reports:
+        writer.writerow([
+            "report",
+            r.id,
+            r.status,
+            r.priority_label,
+            r.urgency_score,
+            r.created_at.isoformat() if r.created_at else "",
+            r.resolved_at.isoformat() if r.resolved_at else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=report_analytics.csv"},
     )
-    resolved_rows = (
-        db.query(func.date(Report.resolved_at), func.count(Report.id))
-        .filter(Report.resolved_at.isnot(None))
-        .filter(Report.resolved_at >= fourteen_days_ago)
-        .group_by(func.date(Report.resolved_at))
-        .all()
-    )
-
-    incoming_map = {str(day): count for day, count in incoming_rows}
-    resolved_map = {str(day): count for day, count in resolved_rows}
-
-    trend = []
-    for i in range(14):
-        day = (fourteen_days_ago + timedelta(days=i)).date().isoformat()
-        trend.append(
-            {
-                "date": day,
-                "incoming": int(incoming_map.get(day, 0)),
-                "resolved": int(resolved_map.get(day, 0)),
-            }
-        )
-
-    return {
-        "summary": {
-            "total_reports": int(total_reports),
-            "status_counts": {
-                "NEW": int(status_counts.get("NEW", 0)),
-                "IN_REVIEW": int(status_counts.get("IN_REVIEW", 0)),
-                "IN_PROGRESS": int(status_counts.get("IN_PROGRESS", 0)),
-                "RESOLVED": int(status_counts.get("RESOLVED", 0)),
-                "REJECTED": int(status_counts.get("REJECTED", 0)),
-            },
-            "priority_counts": {
-                "HIGH": int(priority_counts.get("HIGH", 0)),
-                "MEDIUM": int(priority_counts.get("MEDIUM", 0)),
-                "LOW": int(priority_counts.get("LOW", 0)),
-            },
-        },
-        "trend_14d": trend,
-    }
