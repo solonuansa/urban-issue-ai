@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import type { Variants } from "framer-motion";
-import { RotateCw, Plus } from "lucide-react";
+import { RotateCw, Plus, ShieldAlert } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -13,22 +14,42 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  LineChart,
+  Line,
+  Legend,
 } from "recharts";
 import PriorityBadge from "@/components/PriorityBadge";
-import { getReports, type ReportData as Report } from "@/services/api";
+import { clearAuthSession, getAuthUser, type AuthUser } from "@/lib/auth";
+import {
+  getMe,
+  getReportMetrics,
+  getReports,
+  updateReportStatus,
+  type ReportData as Report,
+  type ReportMetricsResponse,
+  type ReportStatus,
+} from "@/services/api";
 
 const PRIORITY_COLORS = { HIGH: "#ef4444", MEDIUM: "#f59e0b", LOW: "#14b8a6" };
+const STATUS_OPTIONS: Array<ReportStatus | "ALL"> = [
+  "ALL",
+  "NEW",
+  "IN_REVIEW",
+  "IN_PROGRESS",
+  "RESOLVED",
+  "REJECTED",
+];
 
 const containerVariants: Variants = {
   hidden: { opacity: 0 },
   show: {
     opacity: 1,
-    transition: { staggerChildren: 0.1 },
+    transition: { staggerChildren: 0.08 },
   },
 };
 
 const itemVariants: Variants = {
-  hidden: { opacity: 0, y: 15 },
+  hidden: { opacity: 0, y: 10 },
   show: {
     opacity: 1,
     y: 0,
@@ -36,12 +57,20 @@ const itemVariants: Variants = {
   },
 };
 
+const transitionMap: Record<ReportStatus, ReportStatus[]> = {
+  NEW: ["IN_REVIEW", "REJECTED"],
+  IN_REVIEW: ["IN_PROGRESS", "REJECTED"],
+  IN_PROGRESS: ["RESOLVED"],
+  RESOLVED: [],
+  REJECTED: [],
+};
+
 function SkeletonRows() {
   return (
     <>
       {[...Array(6)].map((_, i) => (
         <tr key={i} className="border-b border-slate-100">
-          {[35, 70, 60, 50, 55, 80, 60].map((w, j) => (
+          {[35, 70, 60, 50, 55, 80, 90, 60].map((w, j) => (
             <td key={j} className="px-4 py-3">
               <div className="h-4 bg-slate-200 rounded animate-pulse" style={{ width: `${w}%` }} />
             </td>
@@ -53,77 +82,152 @@ function SkeletonRows() {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const [me, setMe] = useState<AuthUser | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
-  const [filter, setFilter] = useState<string>("ALL");
+  const [metrics, setMetrics] = useState<ReportMetricsResponse | null>(null);
+  const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
+  const [statusFilter, setStatusFilter] = useState<ReportStatus | "ALL">("ALL");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [pendingStatusId, setPendingStatusId] = useState<number | null>(null);
 
-  const fetchReports = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    try {
-      const res = await getReports();
-      setReports(res.reports as Report[]);
-      setError(null);
-      setLastUpdated(new Date());
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to load reports.";
-      setError(message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+  const fetchData = useCallback(
+    async (isRefresh = false) => {
+      if (isRefresh) setRefreshing(true);
+      try {
+        const userRes = await getMe();
+        setMe(userRes.user);
+
+        if (userRes.user.role === "citizen") {
+          setError("Operator/admin access required for dashboard.");
+          setLoading(false);
+          setRefreshing(false);
+          return;
+        }
+
+        const [reportRes, metricRes] = await Promise.all([
+          getReports({
+            priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
+            status: statusFilter,
+          }),
+          getReportMetrics(),
+        ]);
+        setReports(reportRes.reports);
+        setMetrics(metricRes);
+        setError(null);
+        setLastUpdated(new Date());
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Failed to load dashboard data.";
+        if (message.includes("401") || message.toLowerCase().includes("authentication")) {
+          clearAuthSession();
+          router.push("/login");
+          return;
+        }
+        setError(message);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [priorityFilter, router, statusFilter]
+  );
 
   useEffect(() => {
-    fetchReports();
-  }, [fetchReports]);
+    const sessionUser = getAuthUser();
+    if (!sessionUser) {
+      router.push("/login");
+      return;
+    }
+    setMe(sessionUser);
+    fetchData();
+  }, [fetchData, router]);
 
-  const counts = {
-    TOTAL: reports.length,
-    HIGH: reports.filter((r) => r.priority_label === "HIGH").length,
-    MEDIUM: reports.filter((r) => r.priority_label === "MEDIUM").length,
-    LOW: reports.filter((r) => r.priority_label === "LOW").length,
-  };
+  const counts = useMemo(() => {
+    const fallback = {
+      total_reports: reports.length,
+      status_counts: {
+        NEW: reports.filter((r) => r.status === "NEW").length,
+        IN_REVIEW: reports.filter((r) => r.status === "IN_REVIEW").length,
+        IN_PROGRESS: reports.filter((r) => r.status === "IN_PROGRESS").length,
+        RESOLVED: reports.filter((r) => r.status === "RESOLVED").length,
+        REJECTED: reports.filter((r) => r.status === "REJECTED").length,
+      },
+      priority_counts: {
+        HIGH: reports.filter((r) => r.priority_label === "HIGH").length,
+        MEDIUM: reports.filter((r) => r.priority_label === "MEDIUM").length,
+        LOW: reports.filter((r) => r.priority_label === "LOW").length,
+      },
+    };
+
+    return metrics?.summary ?? fallback;
+  }, [metrics, reports]);
 
   const chartData = [
-    { name: "HIGH", count: counts.HIGH },
-    { name: "MEDIUM", count: counts.MEDIUM },
-    { name: "LOW", count: counts.LOW },
+    { name: "HIGH", count: counts.priority_counts.HIGH },
+    { name: "MEDIUM", count: counts.priority_counts.MEDIUM },
+    { name: "LOW", count: counts.priority_counts.LOW },
   ];
-
-  const filtered = filter === "ALL" ? reports : reports.filter((r) => r.priority_label === filter);
 
   const statCards = [
-    { label: "Total reports", value: counts.TOTAL, className: "text-slate-900", note: "All incoming issues" },
-    { label: "High", value: counts.HIGH, className: "text-red-600", note: "Needs urgent handling" },
-    { label: "Medium", value: counts.MEDIUM, className: "text-amber-600", note: "Scheduled intervention" },
-    { label: "Low", value: counts.LOW, className: "text-teal-600", note: "Monitor and batch" },
+    { label: "Total reports", value: counts.total_reports, className: "text-slate-900", note: "All incoming issues" },
+    { label: "In progress", value: counts.status_counts.IN_PROGRESS, className: "text-amber-600", note: "Work underway" },
+    { label: "Resolved", value: counts.status_counts.RESOLVED, className: "text-teal-600", note: "Completed tickets" },
+    { label: "Rejected", value: counts.status_counts.REJECTED, className: "text-rose-600", note: "Closed as invalid" },
   ];
 
+  const updateStatus = async (report: Report, nextStatus: ReportStatus) => {
+    setPendingStatusId(report.id);
+    try {
+      await updateReportStatus({
+        reportId: report.id,
+        status: nextStatus,
+      });
+      await fetchData(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to update report status.";
+      setError(message);
+    } finally {
+      setPendingStatusId(null);
+    }
+  };
+
+  if (me?.role === "citizen") {
+    return (
+      <div className="max-w-3xl mx-auto p-8">
+        <div className="app-card p-6 border border-amber-200 bg-amber-50">
+          <div className="flex items-center gap-3 text-amber-700">
+            <ShieldAlert className="w-5 h-5" />
+            <p className="font-semibold">Dashboard operator hanya untuk role operator/admin.</p>
+          </div>
+          <Link href="/report" className="inline-block mt-4 text-sm font-semibold text-teal-700 hover:underline">
+            Buat laporan baru
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <motion.div 
-      initial="hidden" 
-      animate="show" 
-      variants={containerVariants} 
-      className="max-w-7xl mx-auto px-4 py-6 md:px-8 md:py-8 space-y-6"
-    >
+    <motion.div initial="hidden" animate="show" variants={containerVariants} className="max-w-7xl mx-auto px-4 py-6 md:px-8 md:py-8 space-y-6">
       <motion.section variants={itemVariants} className="app-card p-5 md:p-7">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <p className="app-section-title">Operations Overview</p>
             <h1 className="text-2xl md:text-3xl font-semibold text-slate-900 mt-1">Civic Issues Dashboard</h1>
-            <p className="text-sm text-slate-500 mt-2">Track reports, inspect priority levels, and keep response cycles predictable.</p>
+            <p className="text-sm text-slate-500 mt-2">Workflow monitoring, SLA trend, and priority distribution.</p>
             {lastUpdated && (
               <p className="text-xs text-slate-400 mt-2 font-medium">
                 Last updated: {lastUpdated.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
               </p>
             )}
+            {me && <p className="text-xs text-slate-500 mt-2">Signed in as {me.full_name} ({me.role})</p>}
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={() => fetchReports(true)}
+              onClick={() => fetchData(true)}
               disabled={refreshing}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white/50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:shadow-sm transition-all disabled:opacity-60"
             >
@@ -145,7 +249,7 @@ export default function DashboardPage() {
         <motion.section variants={itemVariants} className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p>{error}</p>
           <button
-            onClick={() => fetchReports(true)}
+            onClick={() => fetchData(true)}
             className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
           >
             Retry
@@ -165,65 +269,89 @@ export default function DashboardPage() {
         ))}
       </motion.section>
 
-      {!loading && !error && reports.length > 0 && (
-        <motion.section variants={itemVariants} className="app-card p-5 md:p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-slate-900">Priority Distribution</h2>
-            <p className="text-xs text-slate-500">Current dataset snapshot</p>
+      {!loading && !error && (
+        <motion.section variants={itemVariants} className="grid lg:grid-cols-2 gap-6">
+          <div className="app-card p-5 md:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold text-slate-900">Priority Distribution</h2>
+            </div>
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={chartData} barSize={52}>
+                <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#64748b", fontWeight: 600 }} axisLine={false} tickLine={false} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
+                <Tooltip />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  {chartData.map((entry) => (
+                    <Cell key={entry.name} fill={PRIORITY_COLORS[entry.name as keyof typeof PRIORITY_COLORS]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={chartData} barSize={52}>
-              <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#64748b", fontWeight: 600 }} axisLine={false} tickLine={false} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
-              <Tooltip
-                cursor={{ fill: "#f1f5f9" }}
-                contentStyle={{
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 12,
-                  fontSize: 12,
-                  boxShadow: "0 4px 20px rgba(15, 23, 42, 0.08)",
-                  fontWeight: 500,
-                }}
-              />
-              <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                {chartData.map((entry) => (
-                  <Cell key={entry.name} fill={PRIORITY_COLORS[entry.name as keyof typeof PRIORITY_COLORS]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+
+          <div className="app-card p-5 md:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold text-slate-900">Trend 14 Hari</h2>
+            </div>
+            <ResponsiveContainer width="100%" height={230}>
+              <LineChart data={metrics?.trend_14d ?? []}>
+                <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#64748b" }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#64748b" }} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="incoming" stroke="#0f766e" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="resolved" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </motion.section>
       )}
 
       <motion.section variants={itemVariants} className="app-card overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200/60 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+        <div className="px-5 py-4 border-b border-slate-200/60 bg-slate-50/50 flex flex-col gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             {["ALL", "HIGH", "MEDIUM", "LOW"].map((p) => (
               <button
                 key={p}
-                onClick={() => setFilter(p)}
+                onClick={() => setPriorityFilter(p)}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
-                  filter === p
+                  priorityFilter === p
                     ? "bg-teal-700 text-white shadow-md shadow-teal-700/20"
                     : "bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700"
                 }`}
               >
-                {p}
+                Priority {p}
               </button>
             ))}
           </div>
-          {!loading && (
-            <span className="text-xs font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
-              {filtered.length} report{filtered.length !== 1 ? "s" : ""}
-            </span>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {STATUS_OPTIONS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
+                  statusFilter === s
+                    ? "bg-slate-800 text-white"
+                    : "bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => fetchData(true)}
+            className="self-start rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Apply Filter
+          </button>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80">
-                {["ID", "Type", "Severity", "Score", "Priority", "Coordinates", "Date"].map((h) => (
+                {["ID", "Type", "Severity", "Score", "Priority", "Status", "Action", "Date"].map((h) => (
                   <th key={h} className="px-5 py-3.5 text-left text-[11px] font-bold uppercase tracking-widest text-slate-400">
                     {h}
                   </th>
@@ -233,53 +361,38 @@ export default function DashboardPage() {
             <tbody className="divide-y divide-slate-100/80 bg-white/50">
               {loading ? (
                 <SkeletonRows />
-              ) : error ? (
+              ) : reports.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-16 text-center">
-                    <p className="text-sm font-medium text-slate-500">Unable to load data.</p>
-                    <button
-                      onClick={() => fetchReports(true)}
-                      className="text-sm text-teal-700 font-semibold hover:underline mt-1"
-                    >
-                      Try again
-                    </button>
-                  </td>
-                </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-16 text-center">
-                    <p className="text-sm font-medium text-slate-500">No reports in this filter.</p>
-                    <Link href="/report" className="text-sm text-teal-700 font-semibold hover:underline mt-1 inline-block">
-                      Create first report
-                    </Link>
+                  <td colSpan={8} className="px-4 py-16 text-center">
+                    <p className="text-sm font-medium text-slate-500">No reports found.</p>
                   </td>
                 </tr>
               ) : (
-                filtered.map((r) => (
+                reports.map((r) => (
                   <tr key={r.id} className="group hover:bg-teal-50/40 transition-colors duration-200">
-                    <td className="px-5 py-4 text-xs font-medium text-slate-500" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
-                      #{r.id}
-                    </td>
-                    <td className="px-5 py-4 text-slate-800 font-semibold capitalize group-hover:text-teal-900 transition-colors">{r.issue_type}</td>
+                    <td className="px-5 py-4 text-xs font-medium text-slate-500">#{r.id}</td>
+                    <td className="px-5 py-4 text-slate-800 font-semibold capitalize">{r.issue_type}</td>
                     <td className="px-5 py-4 text-slate-600 capitalize text-xs font-medium">{r.severity_level}</td>
-                    <td className="px-5 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/50">
-                          <motion.div 
-                            initial={{ width: 0 }} 
-                            animate={{ width: `${r.urgency_score}%` }} 
-                            transition={{ duration: 1, delay: 0.2 }}
-                            className="h-full rounded-full bg-gradient-to-r from-teal-500 to-teal-400" 
-                          />
-                        </div>
-                        <span className="text-xs font-bold text-slate-600" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
-                          {r.urgency_score}
-                        </span>
-                      </div>
-                    </td>
+                    <td className="px-5 py-4 text-xs font-semibold">{r.urgency_score}</td>
                     <td className="px-5 py-4"><PriorityBadge priority={r.priority_label} /></td>
-                    <td className="px-5 py-4 text-[11px] font-medium text-slate-500" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
-                      {r.latitude.toFixed(4)}, {r.longitude.toFixed(4)}
+                    <td className="px-5 py-4 text-xs font-bold text-slate-600">{r.status}</td>
+                    <td className="px-5 py-4">
+                      {transitionMap[r.status].length === 0 ? (
+                        <span className="text-xs text-slate-400">Final</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {transitionMap[r.status].map((nextStatus) => (
+                            <button
+                              key={nextStatus}
+                              disabled={pendingStatusId === r.id}
+                              onClick={() => updateStatus(r, nextStatus)}
+                              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                              {nextStatus}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-xs font-medium text-slate-500">
                       {new Date(r.created_at).toLocaleDateString("en-GB", {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import type { Variants } from "framer-motion";
 import { submitReport, type SubmitReportResponse } from "../services/api";
+import { getAuthToken } from "@/lib/auth";
 import PriorityBadge from "./PriorityBadge";
 import Map from "./Map";
 import LocationPicker from "./LocationPicker";
@@ -86,6 +87,10 @@ export default function ReportForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!image || !pickedLocation) return;
+    if (!getAuthToken()) {
+      setError("Please sign in first to submit a report.");
+      return;
+    }
 
     setLoading(true);
     setError(null);

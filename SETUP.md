@@ -57,6 +57,11 @@ MODEL_PATH=../ai/cv_model/weights/model.pt
 UPLOAD_DIR=./uploads
 MAX_FILE_SIZE_MB=5
 BACKEND_CORS_ORIGINS=http://localhost:3000
+JWT_SECRET_KEY=change-this-in-production
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=120
+LOGIN_RATE_LIMIT_PER_MINUTE=10
+REPORT_RATE_LIMIT_PER_MINUTE=20
 ```
 
 Catatan:
@@ -91,6 +96,15 @@ npm run dev
 Akses di:
 - `http://localhost:3000`
 
+### 4.3 Buat User Pertama (Auth + Role)
+
+1. Buka `http://localhost:3000/login`
+2. Pilih mode `Register`
+3. Untuk akses dashboard operasional, pilih role `operator` atau `admin`
+4. Setelah login:
+   - role `citizen` diarahkan ke halaman report
+   - role `operator/admin` diarahkan ke dashboard
+
 ## 5. Database Production (Railway PostgreSQL)
 
 Gunakan Railway Managed Postgres.
@@ -120,6 +134,10 @@ uvicorn app.main:app --host 0.0.0.0 --port $PORT
 - `DATABASE_URL`
 - `MODEL_PATH`
 - `UPLOAD_DIR`
+- `JWT_SECRET_KEY`
+- `JWT_ALGORITHM`
+- `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`
+- `BACKEND_CORS_ORIGINS`
 
 5. (Opsional tapi disarankan) Atur CORS backend agar hanya mengizinkan domain frontend Vercel.
    - Gunakan `BACKEND_CORS_ORIGINS=https://<frontend-vercel-domain>`

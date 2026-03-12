@@ -2,7 +2,7 @@
 Report Model – defines the database table schema for reports.
 """
 
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -19,4 +19,10 @@ class Report(Base):
     longitude = Column(Float, nullable=False)
     image_url = Column(String, nullable=True)
     auto_response = Column(String, nullable=True)
+    created_by_user_id = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="NEW")  # NEW | IN_REVIEW | IN_PROGRESS | RESOLVED | REJECTED
+    assigned_to_user_id = Column(Integer, nullable=True)
+    resolution_note = Column(String, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())

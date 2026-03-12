@@ -35,6 +35,11 @@ MODEL_PATH = os.getenv("MODEL_PATH", str((PROJECT_ROOT / "ai" / "cv_model" / "we
 
 # API
 BACKEND_CORS_ORIGINS = os.getenv("BACKEND_CORS_ORIGINS", "*")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-only-change-me")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = _resolve_int_env("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 120)
+LOGIN_RATE_LIMIT_PER_MINUTE = _resolve_int_env("LOGIN_RATE_LIMIT_PER_MINUTE", 10)
+REPORT_RATE_LIMIT_PER_MINUTE = _resolve_int_env("REPORT_RATE_LIMIT_PER_MINUTE", 20)
 
 # Urgency score weights
 WEIGHT_SEVERITY = 0.5

@@ -7,3 +7,5 @@ torch==2.2.2
 torchvision==0.17.2
 python-dotenv==1.0.1
 psycopg2-binary==2.9.9
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
