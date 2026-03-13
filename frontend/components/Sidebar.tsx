@@ -10,6 +10,7 @@ import { getNotifications, markAllNotificationsRead } from "@/services/api";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="w-[18px] h-[18px]" /> },
+  { href: "/notifications", label: "Notifications", icon: <Bell className="w-[18px] h-[18px]" /> },
   { href: "/sla", label: "SLA Board", icon: <ShieldAlert className="w-[18px] h-[18px]" /> },
   { href: "/report", label: "New Report", icon: <FileText className="w-[18px] h-[18px]" /> },
 ];
@@ -76,6 +77,11 @@ export default function Sidebar() {
                   {item.icon}
                 </span>
                 <span className="font-medium">{item.label}</span>
+                {item.href === "/notifications" && unreadCount > 0 && (
+                  <span className="ml-auto rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                    {unreadCount}
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -146,6 +152,11 @@ export default function Sidebar() {
                   {item.icon}
                 </div>
                 <span className="text-[10px] font-semibold tracking-wide">{item.label}</span>
+                {item.href === "/notifications" && unreadCount > 0 && (
+                  <span className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
+                    {unreadCount}
+                  </span>
+                )}
               </Link>
             );
           })}
