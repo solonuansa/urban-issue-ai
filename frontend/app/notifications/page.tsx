@@ -13,6 +13,14 @@ import {
   type NotificationItem,
 } from "@/services/api";
 
+const TYPE_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "assignment", label: "Assignment" },
+  { value: "status_update", label: "Status Update" },
+  { value: "workflow", label: "Workflow" },
+  { value: "info", label: "Info" },
+];
+
 export default function NotificationsPage() {
   const router = useRouter();
   const [items, setItems] = useState<NotificationItem[]>([]);
@@ -21,6 +29,8 @@ export default function NotificationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [markAllLoading, setMarkAllLoading] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [unreadOnly, setUnreadOnly] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -30,7 +40,11 @@ export default function NotificationsPage() {
         router.push("/login");
         return;
       }
-      const res = await getNotifications({ limit: 100 });
+      const res = await getNotifications({
+        limit: 100,
+        unread_only: unreadOnly,
+        type: typeFilter === "all" ? undefined : typeFilter,
+      });
       setItems(res.notifications);
       setUnreadCount(res.unread_count);
       setError(null);
@@ -45,7 +59,7 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, typeFilter, unreadOnly]);
 
   useEffect(() => {
     fetchData();
@@ -103,6 +117,29 @@ export default function NotificationsPage() {
             </button>
           </div>
         </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {TYPE_FILTERS.map((f) => (
+            <button
+              key={f.value}
+              onClick={() => setTypeFilter(f.value)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold border ${
+                typeFilter === f.value
+                  ? "bg-teal-700 text-white border-teal-700"
+                  : "bg-white text-slate-600 border-slate-300"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+          <label className="ml-auto inline-flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={unreadOnly}
+              onChange={(e) => setUnreadOnly(e.target.checked)}
+            />
+            Unread only
+          </label>
+        </div>
       </section>
 
       {error && (
@@ -134,7 +171,7 @@ export default function NotificationsPage() {
                   <div className="flex items-center gap-2">
                     {item.related_report_id && (
                       <Link
-                        href="/dashboard"
+                        href={`/reports/${item.related_report_id}`}
                         className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                       >
                         Open Report #{item.related_report_id}

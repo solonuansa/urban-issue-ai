@@ -25,6 +25,7 @@ def _serialize_notification(n: Notification) -> dict:
 @router.get("/")
 def list_notifications(
     unread_only: bool = Query(default=False),
+    type_filter: str | None = Query(default=None, alias="type"),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -32,6 +33,8 @@ def list_notifications(
     query = db.query(Notification).filter(Notification.user_id == current_user.id)
     if unread_only:
         query = query.filter(Notification.is_read.is_(False))
+    if type_filter:
+        query = query.filter(Notification.type == type_filter.strip().lower())
 
     items = query.order_by(Notification.created_at.desc()).limit(limit).all()
     unread_count = (

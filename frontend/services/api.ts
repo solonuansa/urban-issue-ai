@@ -314,10 +314,12 @@ export async function getSlaHighBoard(): Promise<{ items: SlaHighItem[] }> {
 export async function getNotifications(params?: {
   unread_only?: boolean;
   limit?: number;
+  type?: string;
 }): Promise<{ notifications: NotificationItem[]; unread_count: number }> {
   const query = new URLSearchParams();
   if (params?.unread_only) query.set("unread_only", "true");
   if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.type) query.set("type", params.type);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const res = await fetch(`${BASE_URL}/api/notifications/${suffix}`, {
     headers: withAuth(),

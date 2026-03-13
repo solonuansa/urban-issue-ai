@@ -28,9 +28,23 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (!user) return;
-    getNotifications({ unread_only: true, limit: 1 })
-      .then((res) => setUnreadCount(res.unread_count))
-      .catch(() => setUnreadCount(0));
+    let active = true;
+
+    const fetchUnread = async () => {
+      try {
+        const res = await getNotifications({ unread_only: true, limit: 1 });
+        if (active) setUnreadCount(res.unread_count);
+      } catch {
+        if (active) setUnreadCount(0);
+      }
+    };
+
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [user]);
 
   const handleMarkAllRead = async () => {
