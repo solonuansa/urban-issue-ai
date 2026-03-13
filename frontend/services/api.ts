@@ -113,6 +113,17 @@ export interface NotificationItem {
   created_at: string;
 }
 
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+  unread_count: number;
+  meta: {
+    page: number;
+    page_size: number;
+    total: number;
+    total_pages: number;
+  };
+}
+
 export interface SlaHighItem extends ReportData {
   age_hours: number;
   sla_due_at: string;
@@ -313,19 +324,21 @@ export async function getSlaHighBoard(): Promise<{ items: SlaHighItem[] }> {
 
 export async function getNotifications(params?: {
   unread_only?: boolean;
-  limit?: number;
+  page?: number;
+  page_size?: number;
   type?: string;
-}): Promise<{ notifications: NotificationItem[]; unread_count: number }> {
+}): Promise<NotificationListResponse> {
   const query = new URLSearchParams();
   if (params?.unread_only) query.set("unread_only", "true");
-  if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.page) query.set("page", String(params.page));
+  if (params?.page_size) query.set("page_size", String(params.page_size));
   if (params?.type) query.set("type", params.type);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const res = await fetch(`${BASE_URL}/api/notifications/${suffix}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
-  return (await res.json()) as { notifications: NotificationItem[]; unread_count: number };
+  return (await res.json()) as NotificationListResponse;
 }
 
 export async function markNotificationRead(notificationId: number): Promise<void> {

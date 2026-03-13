@@ -32,7 +32,7 @@ export default function Sidebar() {
 
     const fetchUnread = async () => {
       try {
-        const res = await getNotifications({ unread_only: true, limit: 1 });
+        const res = await getNotifications({ unread_only: true, page: 1, page_size: 1 });
         if (active) setUnreadCount(res.unread_count);
       } catch {
         if (active) setUnreadCount(0);

@@ -178,6 +178,15 @@ export default function DashboardPage() {
     fetchData();
   }, [fetchData, router]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchData(true);
+      }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
   const counts = useMemo(() => {
     const fallback = {
       total_reports: reports.length,

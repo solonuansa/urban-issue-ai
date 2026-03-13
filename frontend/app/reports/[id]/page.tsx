@@ -7,11 +7,25 @@ import { ArrowLeft, ClipboardList } from "lucide-react";
 
 import { clearAuthSession, getAuthUser } from "@/lib/auth";
 import {
+  assignReportOperator,
+  getMe,
+  getOperators,
   getReport,
   getReportAuditLogs,
+  updateReportStatus,
+  type OperatorUser,
   type ReportAuditLog,
   type ReportData,
+  type ReportStatus,
 } from "@/services/api";
+
+const transitionMap: Record<ReportStatus, ReportStatus[]> = {
+  NEW: ["IN_REVIEW", "REJECTED"],
+  IN_REVIEW: ["IN_PROGRESS", "REJECTED"],
+  IN_PROGRESS: ["RESOLVED"],
+  RESOLVED: [],
+  REJECTED: [],
+};
 
 export default function ReportDetailPage() {
   const params = useParams<{ id: string }>();
@@ -20,6 +34,10 @@ export default function ReportDetailPage() {
 
   const [report, setReport] = useState<ReportData | null>(null);
   const [logs, setLogs] = useState<ReportAuditLog[]>([]);
+  const [operators, setOperators] = useState<OperatorUser[]>([]);
+  const [canOperate, setCanOperate] = useState(false);
+  const [assigneeId, setAssigneeId] = useState<number | null>(null);
+  const [pendingAction, setPendingAction] = useState<"status" | "assign" | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,12 +55,19 @@ export default function ReportDetailPage() {
         return;
       }
 
-      const [reportRes, auditRes] = await Promise.all([
+      const meRes = await getMe();
+      const isOperator = meRes.user.role === "operator" || meRes.user.role === "admin";
+      setCanOperate(isOperator);
+
+      const [reportRes, auditRes, operatorRes] = await Promise.all([
         getReport(reportId),
         getReportAuditLogs(reportId),
+        isOperator ? getOperators() : Promise.resolve({ operators: [] }),
       ]);
       setReport(reportRes.report);
       setLogs(auditRes.logs);
+      setOperators(operatorRes.operators);
+      setAssigneeId(reportRes.report.assigned_to_user_id ?? null);
       setError(null);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to load report details.";
@@ -60,6 +85,40 @@ export default function ReportDetailPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const onAssign = async () => {
+    if (!report || !assigneeId) return;
+    setPendingAction("assign");
+    try {
+      await assignReportOperator({
+        reportId: report.id,
+        assigned_to_user_id: assigneeId,
+      });
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to assign operator.";
+      setError(message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const onStatusChange = async (nextStatus: ReportStatus) => {
+    if (!report) return;
+    setPendingAction("status");
+    try {
+      await updateReportStatus({
+        reportId: report.id,
+        status: nextStatus,
+      });
+      await fetchData();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to update status.";
+      setError(message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:px-8 md:py-8 space-y-6">
@@ -113,6 +172,53 @@ export default function ReportDetailPage() {
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs text-slate-500 mb-1">System response</p>
                 <p className="text-sm text-slate-700">{report.auto_response}</p>
+              </div>
+            )}
+            {canOperate && (
+              <div className="mt-4 grid md:grid-cols-2 gap-3">
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-2">Assign operator</p>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={assigneeId ?? ""}
+                      onChange={(e) => setAssigneeId(e.target.value ? Number(e.target.value) : null)}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs w-full"
+                    >
+                      <option value="">Unassigned</option>
+                      {operators.map((op) => (
+                        <option key={op.id} value={op.id}>
+                          {op.full_name} ({op.role})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={onAssign}
+                      disabled={pendingAction !== null || !assigneeId}
+                      className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                    >
+                      Assign
+                    </button>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-2">Workflow action</p>
+                  <div className="flex flex-wrap gap-1">
+                    {transitionMap[report.status].length === 0 ? (
+                      <span className="text-xs text-slate-500">Final status</span>
+                    ) : (
+                      transitionMap[report.status].map((nextStatus) => (
+                        <button
+                          key={nextStatus}
+                          onClick={() => onStatusChange(nextStatus)}
+                          disabled={pendingAction !== null}
+                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-40"
+                        >
+                          {nextStatus}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </section>

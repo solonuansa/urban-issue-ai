@@ -31,6 +31,10 @@ export default function NotificationsPage() {
   const [markAllLoading, setMarkAllLoading] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -41,12 +45,15 @@ export default function NotificationsPage() {
         return;
       }
       const res = await getNotifications({
-        limit: 100,
+        page,
+        page_size: pageSize,
         unread_only: unreadOnly,
         type: typeFilter === "all" ? undefined : typeFilter,
       });
       setItems(res.notifications);
       setUnreadCount(res.unread_count);
+      setTotalPages(res.meta?.total_pages ?? 1);
+      setTotalRows(res.meta?.total ?? res.notifications.length);
       setError(null);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to load notifications.";
@@ -59,11 +66,15 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [router, typeFilter, unreadOnly]);
+  }, [router, typeFilter, unreadOnly, page, pageSize]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [typeFilter, unreadOnly]);
 
   const markRead = async (item: NotificationItem) => {
     if (item.is_read) return;
@@ -192,6 +203,27 @@ export default function NotificationsPage() {
             ))}
           </ul>
         )}
+        <div className="px-5 py-3 border-t border-slate-200/60 bg-slate-50/40 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Page {page} / {totalPages} • Total {totalRows}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40"
+            >
+              Prev
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </section>
     </div>
   );
