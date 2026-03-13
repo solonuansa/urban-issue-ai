@@ -130,6 +130,14 @@ export interface SlaHighItem extends ReportData {
   is_breached: boolean;
 }
 
+export interface HotspotItem {
+  lat: number;
+  lng: number;
+  count: number;
+  high_count: number;
+  open_count: number;
+}
+
 type ApiErrorPayload = {
   detail?: string;
   message?: string;
@@ -320,6 +328,37 @@ export async function getSlaHighBoard(): Promise<{ items: SlaHighItem[] }> {
   });
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as { items: SlaHighItem[] };
+}
+
+export async function getHotspots(params?: {
+  days?: number;
+  status?: "OPEN" | ReportStatus;
+  priority?: PriorityLabel;
+  grid_size?: number;
+}): Promise<{
+  hotspots: HotspotItem[];
+  meta: {
+    days: number;
+    grid_size: number;
+    total_reports: number;
+    total_hotspots: number;
+  };
+}> {
+  const query = new URLSearchParams();
+  if (params?.days) query.set("days", String(params.days));
+  if (params?.status) query.set("status", params.status);
+  if (params?.priority) query.set("priority", params.priority);
+  if (params?.grid_size) query.set("grid_size", String(params.grid_size));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    hotspots: HotspotItem[];
+    meta: { days: number; grid_size: number; total_reports: number; total_hotspots: number };
+  };
 }
 
 export async function getNotifications(params?: {

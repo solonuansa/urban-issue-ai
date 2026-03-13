@@ -651,6 +651,71 @@ def get_report_analytics(
     return _build_metrics_payload(db)
 
 
+@router.get("/metrics/hotspots")
+def get_report_hotspots(
+    days: int = Query(default=14, ge=1, le=180),
+    status_filter: str | None = Query(default="OPEN", alias="status"),
+    priority: str | None = Query(default=None),
+    grid_size: float = Query(default=0.01, ge=0.001, le=0.1),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    query = db.query(Report)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    query = query.filter(Report.created_at >= since)
+
+    if priority:
+        priority_upper = priority.upper()
+        if priority_upper not in ("HIGH", "MEDIUM", "LOW"):
+            raise HTTPException(status_code=400, detail="priority must be HIGH, MEDIUM, or LOW")
+        query = query.filter(Report.priority_label == priority_upper)
+
+    if status_filter:
+        status_upper = status_filter.upper()
+        if status_upper == "OPEN":
+            query = query.filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        elif status_upper in REPORT_STATUSES:
+            query = query.filter(Report.status == status_upper)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="status must be OPEN, NEW, IN_REVIEW, IN_PROGRESS, RESOLVED, or REJECTED",
+            )
+
+    reports = query.all()
+    buckets: dict[tuple[float, float], dict] = {}
+
+    for r in reports:
+        lat = round(round(r.latitude / grid_size) * grid_size, 6)
+        lng = round(round(r.longitude / grid_size) * grid_size, 6)
+        key = (lat, lng)
+        if key not in buckets:
+            buckets[key] = {
+                "lat": lat,
+                "lng": lng,
+                "count": 0,
+                "high_count": 0,
+                "open_count": 0,
+            }
+        buckets[key]["count"] += 1
+        if r.priority_label == "HIGH":
+            buckets[key]["high_count"] += 1
+        if r.status in ("NEW", "IN_REVIEW", "IN_PROGRESS"):
+            buckets[key]["open_count"] += 1
+
+    hotspots = sorted(buckets.values(), key=lambda item: item["count"], reverse=True)
+    return {
+        "hotspots": hotspots,
+        "meta": {
+            "days": days,
+            "grid_size": grid_size,
+            "total_reports": len(reports),
+            "total_hotspots": len(hotspots),
+        },
+    }
+
+
 @router.get("/metrics/export.csv")
 def export_report_analytics_csv(
     db: Session = Depends(get_db),

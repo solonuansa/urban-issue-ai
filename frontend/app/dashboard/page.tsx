@@ -19,8 +19,10 @@ import {
   Legend,
 } from "recharts";
 import PriorityBadge from "@/components/PriorityBadge";
+import HotspotMap from "@/components/HotspotMap";
 import { clearAuthSession, getAuthUser, type AuthUser } from "@/lib/auth";
 import {
+  getHotspots,
   getMe,
   getReportMetrics,
   getReports,
@@ -32,6 +34,7 @@ import {
   type ReportData as Report,
   type ReportMetricsResponse,
   type ReportStatus,
+  type HotspotItem,
   type OperatorUser,
   type ReportAuditLog,
 } from "@/services/api";
@@ -92,6 +95,7 @@ export default function DashboardPage() {
   const [me, setMe] = useState<AuthUser | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [metrics, setMetrics] = useState<ReportMetricsResponse | null>(null);
+  const [hotspots, setHotspots] = useState<HotspotItem[]>([]);
   const [operators, setOperators] = useState<OperatorUser[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<ReportStatus | "ALL">("ALL");
@@ -110,6 +114,8 @@ export default function DashboardPage() {
   const [auditTarget, setAuditTarget] = useState<number | null>(null);
   const [auditLogs, setAuditLogs] = useState<ReportAuditLog[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [hotspotDays, setHotspotDays] = useState(14);
+  const [hotspotMode, setHotspotMode] = useState<"OPEN" | "ALL" | "HIGH">("OPEN");
 
   const fetchData = useCallback(
     async (isRefresh = false) => {
@@ -125,7 +131,7 @@ export default function DashboardPage() {
           return;
         }
 
-        const [reportRes, metricRes, operatorRes] = await Promise.all([
+        const [reportRes, metricRes, operatorRes, hotspotRes] = await Promise.all([
           getReports({
             priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
             status: statusFilter,
@@ -135,11 +141,18 @@ export default function DashboardPage() {
           }),
           getReportMetrics(),
           getOperators(),
+          getHotspots({
+            days: hotspotDays,
+            status: hotspotMode === "ALL" ? undefined : "OPEN",
+            priority: hotspotMode === "HIGH" ? "HIGH" : undefined,
+            grid_size: 0.01,
+          }),
         ]);
         setReports(reportRes.reports);
         setTotalPages(reportRes.meta?.total_pages ?? 1);
         setTotalRows(reportRes.meta?.total ?? reportRes.reports.length);
         setMetrics(metricRes);
+        setHotspots(hotspotRes.hotspots);
         setOperators(operatorRes.operators);
         setAssigneeByReport((prev) => {
           const next = { ...prev };
@@ -165,7 +178,7 @@ export default function DashboardPage() {
         setRefreshing(false);
       }
     },
-    [priorityFilter, router, statusFilter, search, page, pageSize]
+    [priorityFilter, router, statusFilter, search, page, pageSize, hotspotDays, hotspotMode]
   );
 
   useEffect(() => {
@@ -451,6 +464,46 @@ export default function DashboardPage() {
           </div>
         </motion.section>
       )}
+
+      <motion.section variants={itemVariants} className="app-card p-5 md:p-6">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Issue Hotspot Map</h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Area dengan konsentrasi laporan tertinggi.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={hotspotDays}
+              onChange={(e) => setHotspotDays(Number(e.target.value))}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+            >
+              <option value={7}>7 days</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+            </select>
+            <select
+              value={hotspotMode}
+              onChange={(e) => setHotspotMode(e.target.value as "OPEN" | "ALL" | "HIGH")}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+            >
+              <option value="OPEN">Open only</option>
+              <option value="ALL">All reports</option>
+              <option value="HIGH">High priority</option>
+            </select>
+          </div>
+        </div>
+        {hotspots.length === 0 ? (
+          <div className="h-80 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center text-sm text-slate-500">
+            No hotspot data for selected filters.
+          </div>
+        ) : (
+          <div className="rounded-xl overflow-hidden border border-slate-200">
+            <HotspotMap hotspots={hotspots} />
+          </div>
+        )}
+      </motion.section>
 
       <motion.section variants={itemVariants} className="app-card overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200/60 bg-slate-50/50 flex flex-col gap-3">
