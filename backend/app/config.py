@@ -19,6 +19,24 @@ def _resolve_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+def _resolve_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _resolve_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Application settings
 APP_NAME = "AI Civic Issue Reporting"
 DEBUG = True
@@ -49,3 +67,24 @@ WEIGHT_REPEAT = 0.2
 # Priority thresholds
 PRIORITY_LOW_MAX = 40
 PRIORITY_MEDIUM_MAX = 70
+
+# Hotspot risk policy (configurable via env)
+HOTSPOT_RISK_WEIGHT_TOTAL = _resolve_float_env("HOTSPOT_RISK_WEIGHT_TOTAL", 1.0)
+HOTSPOT_RISK_WEIGHT_HIGH = _resolve_float_env("HOTSPOT_RISK_WEIGHT_HIGH", 1.8)
+HOTSPOT_RISK_WEIGHT_OPEN = _resolve_float_env("HOTSPOT_RISK_WEIGHT_OPEN", 1.2)
+
+HOTSPOT_RISK_MEDIUM_SCORE_MIN = _resolve_float_env("HOTSPOT_RISK_MEDIUM_SCORE_MIN", 8.0)
+HOTSPOT_RISK_HIGH_SCORE_MIN = _resolve_float_env("HOTSPOT_RISK_HIGH_SCORE_MIN", 16.0)
+HOTSPOT_RISK_CRITICAL_SCORE_MIN = _resolve_float_env("HOTSPOT_RISK_CRITICAL_SCORE_MIN", 28.0)
+
+HOTSPOT_RISK_MEDIUM_COUNT_MIN = _resolve_int_env("HOTSPOT_RISK_MEDIUM_COUNT_MIN", 4)
+HOTSPOT_RISK_HIGH_COUNT_MIN = _resolve_int_env("HOTSPOT_RISK_HIGH_COUNT_MIN", 8)
+HOTSPOT_RISK_CRITICAL_COUNT_MIN = _resolve_int_env("HOTSPOT_RISK_CRITICAL_COUNT_MIN", 12)
+HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN = _resolve_int_env("HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN", 3)
+
+# Demo accounts (for local/testing)
+DEMO_ACCOUNTS_ENABLED = _resolve_bool_env("DEMO_ACCOUNTS_ENABLED", True)
+DEMO_ACCOUNT_PASSWORD = os.getenv("DEMO_ACCOUNT_PASSWORD", "Demo12345!")
+DEMO_CITIZEN_EMAIL = os.getenv("DEMO_CITIZEN_EMAIL", "citizen.demo@urban-issue.ai")
+DEMO_OPERATOR_EMAIL = os.getenv("DEMO_OPERATOR_EMAIL", "operator.demo@urban-issue.ai")
+DEMO_ADMIN_EMAIL = os.getenv("DEMO_ADMIN_EMAIL", "admin.demo@urban-issue.ai")

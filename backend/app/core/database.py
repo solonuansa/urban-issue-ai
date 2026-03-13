@@ -34,11 +34,13 @@ def _run_lightweight_migrations() -> None:
     Safe for repeated startup calls.
     """
     inspector = inspect(engine)
+    is_sqlite = engine.dialect.name == "sqlite"
     if "reports" not in inspector.get_table_names():
         return
 
     existing_columns = {col["name"] for col in inspector.get_columns("reports")}
     statements = []
+    updated_at_added = False
 
     if "status" not in existing_columns:
         statements.append("ALTER TABLE reports ADD COLUMN status VARCHAR DEFAULT 'NEW'")
@@ -51,7 +53,11 @@ def _run_lightweight_migrations() -> None:
     if "resolved_at" not in existing_columns:
         statements.append("ALTER TABLE reports ADD COLUMN resolved_at TIMESTAMP")
     if "updated_at" not in existing_columns:
-        statements.append("ALTER TABLE reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        updated_at_added = True
+        if is_sqlite:
+            statements.append("ALTER TABLE reports ADD COLUMN updated_at TIMESTAMP")
+        else:
+            statements.append("ALTER TABLE reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     if not statements:
         return
@@ -59,6 +65,8 @@ def _run_lightweight_migrations() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        if updated_at_added and is_sqlite:
+            conn.execute(text("UPDATE reports SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"))
 
 
 def get_db():

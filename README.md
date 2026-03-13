@@ -73,3 +73,10 @@ urban-issue-ai/
 - Rencana implementasi: [`docs/development_plan.md`](./docs/development_plan.md)
 - Style guide mini UI: [`docs/style_guide_mini.md`](./docs/style_guide_mini.md)
 - Notebook training model: [`archive/README.md`](./archive/README.md)
+
+## Demo Accounts (Local)
+
+Saat backend berjalan, sistem otomatis membuat akun demo (jika belum ada):
+- `admin.demo@urban-issue.ai` / `Demo12345!`
+- `operator.demo@urban-issue.ai` / `Demo12345!`
+- `citizen.demo@urban-issue.ai` / `Demo12345!`

@@ -4,7 +4,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import auth, notification, report
 from app.config import BACKEND_CORS_ORIGINS, UPLOAD_DIR
-from app.core.database import init_db
+from app.core.database import SessionLocal, init_db
+from app.services.seed_service import ensure_demo_accounts
 
 app = FastAPI(
     title="AI Civic Issue Reporting API",
@@ -35,6 +36,11 @@ async def startup():
 
     makedirs(UPLOAD_DIR, exist_ok=True)
     init_db()
+    db = SessionLocal()
+    try:
+        ensure_demo_accounts(db)
+    finally:
+        db.close()
 
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")

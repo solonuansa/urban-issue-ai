@@ -17,6 +17,12 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const fillDemoAccount = (nextEmail: string) => {
+    setEmail(nextEmail);
+    setPassword("Demo12345!");
+    setError(null);
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -52,6 +58,34 @@ export default function LoginPage() {
         <p className="text-sm text-slate-500 mt-2">
           Use operator/admin role for dashboard workflow features.
         </p>
+        {mode === "login" && (
+          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <p className="font-semibold text-slate-700">Demo accounts</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => fillDemoAccount("admin.demo@urban-issue.ai")}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Use Demo Admin
+              </button>
+              <button
+                type="button"
+                onClick={() => fillDemoAccount("operator.demo@urban-issue.ai")}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Use Demo Operator
+              </button>
+              <button
+                type="button"
+                onClick={() => fillDemoAccount("citizen.demo@urban-issue.ai")}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Use Demo Citizen
+              </button>
+            </div>
+          </div>
+        )}
 
         <form className="mt-6 space-y-4" onSubmit={onSubmit}>
           {mode === "register" && (

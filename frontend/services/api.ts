@@ -136,6 +136,28 @@ export interface HotspotItem {
   count: number;
   high_count: number;
   open_count: number;
+  risk_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  risk_score: number;
+}
+
+export interface HotspotRiskPolicy {
+  source: "env_default" | "db_override";
+  weights: {
+    total: number;
+    high: number;
+    open: number;
+  };
+  score_min: {
+    medium: number;
+    high: number;
+    critical: number;
+  };
+  count_min: {
+    medium: number;
+    high: number;
+    critical: number;
+    critical_high_count: number;
+  };
 }
 
 type ApiErrorPayload = {
@@ -342,6 +364,7 @@ export async function getHotspots(params?: {
     grid_size: number;
     total_reports: number;
     total_hotspots: number;
+    risk_policy?: HotspotRiskPolicy;
   };
 }> {
   const query = new URLSearchParams();
@@ -357,7 +380,82 @@ export async function getHotspots(params?: {
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as {
     hotspots: HotspotItem[];
-    meta: { days: number; grid_size: number; total_reports: number; total_hotspots: number };
+    meta: {
+      days: number;
+      grid_size: number;
+      total_reports: number;
+      total_hotspots: number;
+      risk_policy?: HotspotRiskPolicy;
+    };
+  };
+}
+
+export async function getHotspotRiskPolicy(): Promise<{ policy: HotspotRiskPolicy }> {
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { policy: HotspotRiskPolicy };
+}
+
+export async function updateHotspotRiskPolicy(payload: {
+  weight_total: number;
+  weight_high: number;
+  weight_open: number;
+  medium_score_min: number;
+  high_score_min: number;
+  critical_score_min: number;
+  medium_count_min: number;
+  high_count_min: number;
+  critical_count_min: number;
+  critical_high_count_min: number;
+}): Promise<{ message: string; policy: HotspotRiskPolicy }> {
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
+    method: "PATCH",
+    headers: {
+      ...withAuth(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { message: string; policy: HotspotRiskPolicy };
+}
+
+export async function getHotspotReports(params: {
+  lat: number;
+  lng: number;
+  days?: number;
+  status?: "OPEN" | ReportStatus;
+  priority?: PriorityLabel;
+  grid_size?: number;
+  limit?: number;
+}): Promise<{
+  reports: ReportData[];
+  meta: {
+    lat: number;
+    lng: number;
+    grid_size: number;
+    days: number;
+    count: number;
+  };
+}> {
+  const query = new URLSearchParams();
+  query.set("lat", String(params.lat));
+  query.set("lng", String(params.lng));
+  if (params.days) query.set("days", String(params.days));
+  if (params.status) query.set("status", params.status);
+  if (params.priority) query.set("priority", params.priority);
+  if (params.grid_size) query.set("grid_size", String(params.grid_size));
+  if (params.limit) query.set("limit", String(params.limit));
+
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/reports?${query.toString()}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    reports: ReportData[];
+    meta: { lat: number; lng: number; grid_size: number; days: number; count: number };
   };
 }
 

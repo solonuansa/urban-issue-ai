@@ -9,12 +9,28 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import String, cast, func, or_
+from pydantic import BaseModel, Field
+from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.orm import Session
 
-from app.config import MAX_FILE_SIZE_MB, REPORT_RATE_LIMIT_PER_MINUTE, UPLOAD_DIR
+from app.config import (
+    HOTSPOT_RISK_CRITICAL_COUNT_MIN,
+    HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN,
+    HOTSPOT_RISK_CRITICAL_SCORE_MIN,
+    HOTSPOT_RISK_HIGH_COUNT_MIN,
+    HOTSPOT_RISK_HIGH_SCORE_MIN,
+    HOTSPOT_RISK_MEDIUM_COUNT_MIN,
+    HOTSPOT_RISK_MEDIUM_SCORE_MIN,
+    HOTSPOT_RISK_WEIGHT_HIGH,
+    HOTSPOT_RISK_WEIGHT_OPEN,
+    HOTSPOT_RISK_WEIGHT_TOTAL,
+    MAX_FILE_SIZE_MB,
+    REPORT_RATE_LIMIT_PER_MINUTE,
+    UPLOAD_DIR,
+)
 from app.core.database import get_db
-from app.dependencies.auth import get_current_user, require_operator_or_admin
+from app.dependencies.auth import get_current_user, require_admin, require_operator_or_admin
+from app.models.hotspot_risk_policy_model import HotspotRiskPolicy
 from app.models.report_model import Report
 from app.models.report_audit_log import ReportAuditLog
 from app.models.notification_model import Notification
@@ -37,6 +53,93 @@ VALID_TRANSITIONS = {
     "IN_REVIEW": {"IN_PROGRESS", "REJECTED"},
     "IN_PROGRESS": {"RESOLVED"},
 }
+
+
+class HotspotRiskPolicyPayload(BaseModel):
+    weight_total: float = Field(gt=0)
+    weight_high: float = Field(gt=0)
+    weight_open: float = Field(gt=0)
+    medium_score_min: float = Field(ge=0)
+    high_score_min: float = Field(ge=0)
+    critical_score_min: float = Field(ge=0)
+    medium_count_min: int = Field(ge=0)
+    high_count_min: int = Field(ge=0)
+    critical_count_min: int = Field(ge=0)
+    critical_high_count_min: int = Field(ge=0)
+
+
+def _default_hotspot_policy() -> dict:
+    return {
+        "weight_total": HOTSPOT_RISK_WEIGHT_TOTAL,
+        "weight_high": HOTSPOT_RISK_WEIGHT_HIGH,
+        "weight_open": HOTSPOT_RISK_WEIGHT_OPEN,
+        "medium_score_min": HOTSPOT_RISK_MEDIUM_SCORE_MIN,
+        "high_score_min": HOTSPOT_RISK_HIGH_SCORE_MIN,
+        "critical_score_min": HOTSPOT_RISK_CRITICAL_SCORE_MIN,
+        "medium_count_min": HOTSPOT_RISK_MEDIUM_COUNT_MIN,
+        "high_count_min": HOTSPOT_RISK_HIGH_COUNT_MIN,
+        "critical_count_min": HOTSPOT_RISK_CRITICAL_COUNT_MIN,
+        "critical_high_count_min": HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN,
+    }
+
+
+def _validate_hotspot_policy(policy: dict) -> None:
+    if policy["medium_score_min"] > policy["high_score_min"]:
+        raise HTTPException(status_code=400, detail="medium_score_min must be <= high_score_min")
+    if policy["high_score_min"] > policy["critical_score_min"]:
+        raise HTTPException(status_code=400, detail="high_score_min must be <= critical_score_min")
+    if policy["medium_count_min"] > policy["high_count_min"]:
+        raise HTTPException(status_code=400, detail="medium_count_min must be <= high_count_min")
+    if policy["high_count_min"] > policy["critical_count_min"]:
+        raise HTTPException(status_code=400, detail="high_count_min must be <= critical_count_min")
+    if policy["critical_high_count_min"] > policy["critical_count_min"]:
+        raise HTTPException(
+            status_code=400,
+            detail="critical_high_count_min must be <= critical_count_min",
+        )
+
+
+def _serialize_hotspot_policy(policy: dict, *, source: str) -> dict:
+    return {
+        "source": source,
+        "weights": {
+            "total": policy["weight_total"],
+            "high": policy["weight_high"],
+            "open": policy["weight_open"],
+        },
+        "score_min": {
+            "medium": policy["medium_score_min"],
+            "high": policy["high_score_min"],
+            "critical": policy["critical_score_min"],
+        },
+        "count_min": {
+            "medium": policy["medium_count_min"],
+            "high": policy["high_count_min"],
+            "critical": policy["critical_count_min"],
+            "critical_high_count": policy["critical_high_count_min"],
+        },
+    }
+
+
+def _get_hotspot_policy(db: Session) -> tuple[dict, str]:
+    row = db.query(HotspotRiskPolicy).order_by(HotspotRiskPolicy.id.desc()).first()
+    if not row:
+        return _default_hotspot_policy(), "env_default"
+    return (
+        {
+            "weight_total": float(row.weight_total),
+            "weight_high": float(row.weight_high),
+            "weight_open": float(row.weight_open),
+            "medium_score_min": float(row.medium_score_min),
+            "high_score_min": float(row.high_score_min),
+            "critical_score_min": float(row.critical_score_min),
+            "medium_count_min": int(row.medium_count_min),
+            "high_count_min": int(row.high_count_min),
+            "critical_count_min": int(row.critical_count_min),
+            "critical_high_count_min": int(row.critical_high_count_min),
+        },
+        "db_override",
+    )
 
 
 def _create_notification(
@@ -68,6 +171,71 @@ def _to_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _bucket_center(lat: float, lng: float, grid_size: float) -> tuple[float, float]:
+    return (
+        round(round(lat / grid_size) * grid_size, 6),
+        round(round(lng / grid_size) * grid_size, 6),
+    )
+
+
+def _bucket_expr(column, grid_size: float):
+    return func.round(func.round(column / grid_size) * grid_size, 6)
+
+
+def _classify_hotspot_risk(
+    count: int,
+    high_count: int,
+    open_count: int,
+    policy: dict,
+) -> tuple[str, float]:
+    risk_score = (
+        (policy["weight_total"] * float(count))
+        + (policy["weight_high"] * float(high_count))
+        + (policy["weight_open"] * float(open_count))
+    )
+    if risk_score >= policy["critical_score_min"] or (
+        count >= policy["critical_count_min"]
+        and high_count >= policy["critical_high_count_min"]
+    ):
+        return "CRITICAL", round(risk_score, 2)
+    if risk_score >= policy["high_score_min"] or count >= policy["high_count_min"]:
+        return "HIGH", round(risk_score, 2)
+    if risk_score >= policy["medium_score_min"] or count >= policy["medium_count_min"]:
+        return "MEDIUM", round(risk_score, 2)
+    return "LOW", round(risk_score, 2)
+
+
+def _apply_hotspot_filters(
+    query,
+    *,
+    days: int,
+    status_filter: str | None,
+    priority: str | None,
+):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    query = query.filter(Report.created_at >= since)
+
+    if priority:
+        priority_upper = priority.upper()
+        if priority_upper not in ("HIGH", "MEDIUM", "LOW"):
+            raise HTTPException(status_code=400, detail="priority must be HIGH, MEDIUM, or LOW")
+        query = query.filter(Report.priority_label == priority_upper)
+
+    if status_filter:
+        status_upper = status_filter.upper()
+        if status_upper == "OPEN":
+            query = query.filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        elif status_upper in REPORT_STATUSES:
+            query = query.filter(Report.status == status_upper)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="status must be OPEN, NEW, IN_REVIEW, IN_PROGRESS, RESOLVED, or REJECTED",
+            )
+
+    return query
 
 
 def _build_metrics_payload(db: Session) -> dict:
@@ -651,6 +819,44 @@ def get_report_analytics(
     return _build_metrics_payload(db)
 
 
+@router.get("/metrics/hotspots/policy")
+def get_hotspot_risk_policy(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    policy, source = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+    return {"policy": _serialize_hotspot_policy(policy, source=source)}
+
+
+@router.patch("/metrics/hotspots/policy")
+def update_hotspot_risk_policy(
+    payload: HotspotRiskPolicyPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    policy = payload.model_dump()
+    _validate_hotspot_policy(policy)
+
+    row = db.query(HotspotRiskPolicy).order_by(HotspotRiskPolicy.id.desc()).first()
+    if not row:
+        row = HotspotRiskPolicy(**policy, updated_by_user_id=current_user.id)
+        db.add(row)
+    else:
+        for key, value in policy.items():
+            setattr(row, key, value)
+        row.updated_by_user_id = current_user.id
+
+    db.commit()
+    db.refresh(row)
+
+    final_policy, source = _get_hotspot_policy(db)
+    return {
+        "message": "Hotspot risk policy updated",
+        "policy": _serialize_hotspot_policy(final_policy, source=source),
+    }
+
+
 @router.get("/metrics/hotspots")
 def get_report_hotspots(
     days: int = Query(default=14, ge=1, le=180),
@@ -660,58 +866,112 @@ def get_report_hotspots(
     db: Session = Depends(get_db),
     _: User = Depends(require_operator_or_admin),
 ):
-    query = db.query(Report)
+    policy, policy_source = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    query = query.filter(Report.created_at >= since)
+    bucket_lat = _bucket_expr(Report.latitude, grid_size).label("bucket_lat")
+    bucket_lng = _bucket_expr(Report.longitude, grid_size).label("bucket_lng")
 
-    if priority:
-        priority_upper = priority.upper()
-        if priority_upper not in ("HIGH", "MEDIUM", "LOW"):
-            raise HTTPException(status_code=400, detail="priority must be HIGH, MEDIUM, or LOW")
-        query = query.filter(Report.priority_label == priority_upper)
+    base_query = _apply_hotspot_filters(
+        db.query(Report),
+        days=days,
+        status_filter=status_filter,
+        priority=priority,
+    )
 
-    if status_filter:
-        status_upper = status_filter.upper()
-        if status_upper == "OPEN":
-            query = query.filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
-        elif status_upper in REPORT_STATUSES:
-            query = query.filter(Report.status == status_upper)
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="status must be OPEN, NEW, IN_REVIEW, IN_PROGRESS, RESOLVED, or REJECTED",
-            )
+    rows = (
+        base_query.with_entities(
+            bucket_lat,
+            bucket_lng,
+            func.count(Report.id).label("count"),
+            func.sum(case((Report.priority_label == "HIGH", 1), else_=0)).label("high_count"),
+            func.sum(
+                case((Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")), 1), else_=0)
+            ).label("open_count"),
+        )
+        .group_by(bucket_lat, bucket_lng)
+        .order_by(func.count(Report.id).desc())
+        .all()
+    )
 
-    reports = query.all()
-    buckets: dict[tuple[float, float], dict] = {}
-
-    for r in reports:
-        lat = round(round(r.latitude / grid_size) * grid_size, 6)
-        lng = round(round(r.longitude / grid_size) * grid_size, 6)
-        key = (lat, lng)
-        if key not in buckets:
-            buckets[key] = {
-                "lat": lat,
-                "lng": lng,
-                "count": 0,
-                "high_count": 0,
-                "open_count": 0,
+    hotspots = []
+    for row in rows:
+        count = int(row.count)
+        high_count = int(row.high_count or 0)
+        open_count = int(row.open_count or 0)
+        risk_level, risk_score = _classify_hotspot_risk(count, high_count, open_count, policy)
+        hotspots.append(
+            {
+                "lat": float(row.bucket_lat),
+                "lng": float(row.bucket_lng),
+                "count": count,
+                "high_count": high_count,
+                "open_count": open_count,
+                "risk_level": risk_level,
+                "risk_score": risk_score,
             }
-        buckets[key]["count"] += 1
-        if r.priority_label == "HIGH":
-            buckets[key]["high_count"] += 1
-        if r.status in ("NEW", "IN_REVIEW", "IN_PROGRESS"):
-            buckets[key]["open_count"] += 1
+        )
 
-    hotspots = sorted(buckets.values(), key=lambda item: item["count"], reverse=True)
+    hotspots.sort(
+        key=lambda item: (
+            item["risk_score"],
+            item["count"],
+            item["high_count"],
+            item["open_count"],
+        ),
+        reverse=True,
+    )
+    total_reports = int(base_query.count())
     return {
         "hotspots": hotspots,
         "meta": {
             "days": days,
             "grid_size": grid_size,
-            "total_reports": len(reports),
+            "total_reports": total_reports,
             "total_hotspots": len(hotspots),
+            "risk_policy": _serialize_hotspot_policy(policy, source=policy_source),
+        },
+    }
+
+
+@router.get("/metrics/hotspots/reports")
+def get_reports_by_hotspot_bucket(
+    lat: float = Query(...),
+    lng: float = Query(...),
+    days: int = Query(default=14, ge=1, le=180),
+    status_filter: str | None = Query(default="OPEN", alias="status"),
+    priority: str | None = Query(default=None),
+    grid_size: float = Query(default=0.01, ge=0.001, le=0.1),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    target_lat, target_lng = _bucket_center(lat, lng, grid_size)
+    bucket_lat = _bucket_expr(Report.latitude, grid_size)
+    bucket_lng = _bucket_expr(Report.longitude, grid_size)
+
+    filtered_reports = _apply_hotspot_filters(
+        db.query(Report),
+        days=days,
+        status_filter=status_filter,
+        priority=priority,
+    )
+    items = (
+        filtered_reports.filter(bucket_lat == target_lat)
+        .filter(bucket_lng == target_lng)
+        .order_by(Report.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "reports": [_serialize_report(r) for r in items],
+        "meta": {
+            "lat": target_lat,
+            "lng": target_lng,
+            "grid_size": grid_size,
+            "days": days,
+            "count": len(items),
         },
     }
 

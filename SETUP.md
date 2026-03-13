@@ -62,6 +62,21 @@ JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=120
 LOGIN_RATE_LIMIT_PER_MINUTE=10
 REPORT_RATE_LIMIT_PER_MINUTE=20
+HOTSPOT_RISK_WEIGHT_TOTAL=1.0
+HOTSPOT_RISK_WEIGHT_HIGH=1.8
+HOTSPOT_RISK_WEIGHT_OPEN=1.2
+HOTSPOT_RISK_MEDIUM_SCORE_MIN=8
+HOTSPOT_RISK_HIGH_SCORE_MIN=16
+HOTSPOT_RISK_CRITICAL_SCORE_MIN=28
+HOTSPOT_RISK_MEDIUM_COUNT_MIN=4
+HOTSPOT_RISK_HIGH_COUNT_MIN=8
+HOTSPOT_RISK_CRITICAL_COUNT_MIN=12
+HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN=3
+DEMO_ACCOUNTS_ENABLED=true
+DEMO_ACCOUNT_PASSWORD=Demo12345!
+DEMO_CITIZEN_EMAIL=citizen.demo@urban-issue.ai
+DEMO_OPERATOR_EMAIL=operator.demo@urban-issue.ai
+DEMO_ADMIN_EMAIL=admin.demo@urban-issue.ai
 ```
 
 Catatan:
@@ -104,6 +119,21 @@ Akses di:
 4. Setelah login:
    - role `citizen` diarahkan ke halaman report
    - role `operator/admin` diarahkan ke dashboard
+
+### 4.4 Akun Demo (Otomatis)
+
+Saat backend startup, akun demo akan otomatis dibuat jika belum ada (default aktif).
+
+- Citizen: `citizen.demo@urban-issue.ai`
+- Operator: `operator.demo@urban-issue.ai`
+- Admin: `admin.demo@urban-issue.ai`
+- Password default: `Demo12345!`
+
+Jika ingin mematikan akun demo di environment tertentu:
+
+```env
+DEMO_ACCOUNTS_ENABLED=false
+```
 
 ## 5. Database Production (Railway PostgreSQL)
 
