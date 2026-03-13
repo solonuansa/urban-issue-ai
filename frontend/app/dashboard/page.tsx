@@ -194,6 +194,14 @@ export default function DashboardPage() {
     { name: "LOW", count: counts.priority_counts.LOW },
   ];
 
+  const advanced = metrics?.advanced ?? {
+    mttr_hours: 0,
+    sla_breached_high: 0,
+    aging_backlog_over_7d: 0,
+    resolution_rate_14d: 0,
+    top_issue_types: [],
+  };
+
   const statCards = [
     { label: "Total reports", value: counts.total_reports, className: "text-slate-900", note: "All incoming issues" },
     { label: "In progress", value: counts.status_counts.IN_PROGRESS, className: "text-amber-600", note: "Work underway" },
@@ -351,8 +359,31 @@ export default function DashboardPage() {
         ))}
       </motion.section>
 
+      <motion.section variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="app-card p-4 md:p-5">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">MTTR</p>
+          <p className="text-2xl font-bold mt-2 text-slate-900">{advanced.mttr_hours}h</p>
+          <p className="text-xs text-slate-500 mt-2">Average time to resolve</p>
+        </div>
+        <div className="app-card p-4 md:p-5">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">SLA Breach HIGH</p>
+          <p className="text-2xl font-bold mt-2 text-rose-600">{advanced.sla_breached_high}</p>
+          <p className="text-xs text-slate-500 mt-2">High-priority overdue/late</p>
+        </div>
+        <div className="app-card p-4 md:p-5">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Aging Backlog 7d+</p>
+          <p className="text-2xl font-bold mt-2 text-amber-600">{advanced.aging_backlog_over_7d}</p>
+          <p className="text-xs text-slate-500 mt-2">Open tickets older than 7 days</p>
+        </div>
+        <div className="app-card p-4 md:p-5">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Resolution Rate 14d</p>
+          <p className="text-2xl font-bold mt-2 text-teal-700">{advanced.resolution_rate_14d}%</p>
+          <p className="text-xs text-slate-500 mt-2">Resolved vs incoming in last 14 days</p>
+        </div>
+      </motion.section>
+
       {!loading && !error && (
-        <motion.section variants={itemVariants} className="grid lg:grid-cols-2 gap-6">
+        <motion.section variants={itemVariants} className="grid lg:grid-cols-3 gap-6">
           <div className="app-card p-5 md:p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-semibold text-slate-900">Priority Distribution</h2>
@@ -384,6 +415,19 @@ export default function DashboardPage() {
                 <Line type="monotone" dataKey="incoming" stroke="#0f766e" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="resolved" stroke="#f59e0b" strokeWidth={2} dot={false} />
               </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="app-card p-5 md:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold text-slate-900">Top Issue Types</h2>
+            </div>
+            <ResponsiveContainer width="100%" height={230}>
+              <BarChart data={advanced.top_issue_types}>
+                <XAxis dataKey="issue_type" tick={{ fontSize: 11, fill: "#64748b" }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#64748b" }} />
+                <Tooltip />
+                <Bar dataKey="count" fill="#0f766e" radius={[6, 6, 0, 0]} />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </motion.section>

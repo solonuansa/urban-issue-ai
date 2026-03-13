@@ -80,6 +80,79 @@ def _build_metrics_payload(db: Session) -> dict:
             }
         )
 
+    resolved_reports = (
+        db.query(Report.created_at, Report.resolved_at)
+        .filter(Report.resolved_at.isnot(None))
+        .all()
+    )
+    resolution_hours = []
+    for created_at, resolved_at in resolved_reports:
+        if created_at and resolved_at:
+            delta = resolved_at - created_at
+            resolution_hours.append(delta.total_seconds() / 3600)
+
+    mttr_hours = round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else 0.0
+
+    now_utc = datetime.now(timezone.utc)
+    high_sla_cutoff = now_utc - timedelta(days=2)
+    backlog_cutoff = now_utc - timedelta(days=7)
+
+    high_open_breached = (
+        db.query(func.count(Report.id))
+        .filter(Report.priority_label == "HIGH")
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        .filter(Report.created_at <= high_sla_cutoff)
+        .scalar()
+        or 0
+    )
+
+    high_resolved_reports = (
+        db.query(Report.created_at, Report.resolved_at)
+        .filter(Report.priority_label == "HIGH")
+        .filter(Report.resolved_at.isnot(None))
+        .all()
+    )
+    high_resolved_late = 0
+    for created_at, resolved_at in high_resolved_reports:
+        if created_at and resolved_at and (resolved_at - created_at) > timedelta(days=2):
+            high_resolved_late += 1
+
+    aging_backlog_over_7d = (
+        db.query(func.count(Report.id))
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        .filter(Report.created_at <= backlog_cutoff)
+        .scalar()
+        or 0
+    )
+
+    fourteen_days_ago_count = now_utc - timedelta(days=14)
+    incoming_14d = (
+        db.query(func.count(Report.id))
+        .filter(Report.created_at >= fourteen_days_ago_count)
+        .scalar()
+        or 0
+    )
+    resolved_14d = (
+        db.query(func.count(Report.id))
+        .filter(Report.resolved_at.isnot(None))
+        .filter(Report.resolved_at >= fourteen_days_ago_count)
+        .scalar()
+        or 0
+    )
+    resolution_rate_14d = round((resolved_14d / incoming_14d) * 100, 2) if incoming_14d else 0.0
+
+    top_issue_rows = (
+        db.query(Report.issue_type, func.count(Report.id))
+        .group_by(Report.issue_type)
+        .order_by(func.count(Report.id).desc())
+        .limit(5)
+        .all()
+    )
+    top_issue_types = [
+        {"issue_type": issue_type or "unknown", "count": int(count)}
+        for issue_type, count in top_issue_rows
+    ]
+
     return {
         "summary": {
             "total_reports": int(total_reports),
@@ -97,6 +170,13 @@ def _build_metrics_payload(db: Session) -> dict:
             },
         },
         "trend_14d": trend,
+        "advanced": {
+            "mttr_hours": mttr_hours,
+            "sla_breached_high": int(high_open_breached + high_resolved_late),
+            "aging_backlog_over_7d": int(aging_backlog_over_7d),
+            "resolution_rate_14d": resolution_rate_14d,
+            "top_issue_types": top_issue_types,
+        },
     }
 
 
@@ -452,6 +532,15 @@ def export_report_analytics_csv(
         writer.writerow(["status_counts", key, value])
     for key, value in metrics["summary"]["priority_counts"].items():
         writer.writerow(["priority_counts", key, value])
+    writer.writerow(["advanced", "mttr_hours", metrics["advanced"]["mttr_hours"]])
+    writer.writerow(["advanced", "sla_breached_high", metrics["advanced"]["sla_breached_high"]])
+    writer.writerow(["advanced", "aging_backlog_over_7d", metrics["advanced"]["aging_backlog_over_7d"]])
+    writer.writerow(["advanced", "resolution_rate_14d", metrics["advanced"]["resolution_rate_14d"]])
+
+    writer.writerow([])
+    writer.writerow(["top_issue_types", "issue_type", "count"])
+    for row in metrics["advanced"]["top_issue_types"]:
+        writer.writerow(["top_issue_types", row["issue_type"], row["count"]])
 
     writer.writerow([])
     writer.writerow(["trend_14d", "date", "incoming", "resolved"])

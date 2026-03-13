@@ -66,6 +66,16 @@ export interface ReportMetricsResponse {
     incoming: number;
     resolved: number;
   }>;
+  advanced: {
+    mttr_hours: number;
+    sla_breached_high: number;
+    aging_backlog_over_7d: number;
+    resolution_rate_14d: number;
+    top_issue_types: Array<{
+      issue_type: string;
+      count: number;
+    }>;
+  };
 }
 
 export interface OperatorUser {
