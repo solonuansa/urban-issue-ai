@@ -95,6 +95,11 @@ export default function DashboardPage() {
   const [operators, setOperators] = useState<OperatorUser[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<ReportStatus | "ALL">("ALL");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,11 +129,16 @@ export default function DashboardPage() {
           getReports({
             priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
             status: statusFilter,
+            search,
+            page,
+            page_size: pageSize,
           }),
           getReportMetrics(),
           getOperators(),
         ]);
         setReports(reportRes.reports);
+        setTotalPages(reportRes.meta?.total_pages ?? 1);
+        setTotalRows(reportRes.meta?.total ?? reportRes.reports.length);
         setMetrics(metricRes);
         setOperators(operatorRes.operators);
         setAssigneeByReport((prev) => {
@@ -155,7 +165,7 @@ export default function DashboardPage() {
         setRefreshing(false);
       }
     },
-    [priorityFilter, router, statusFilter]
+    [priorityFilter, router, statusFilter, search, page, pageSize]
   );
 
   useEffect(() => {
@@ -466,11 +476,20 @@ export default function DashboardPage() {
             ))}
           </div>
           <button
-            onClick={() => fetchData(true)}
+            onClick={() => {
+              setPage(1);
+              fetchData(true);
+            }}
             className="self-start rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
           >
             Apply Filter
           </button>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search issue, status, severity, ID"
+            className="app-input w-full md:max-w-md"
+          />
         </div>
 
         <div className="overflow-x-auto">
@@ -567,6 +586,27 @@ export default function DashboardPage() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="px-5 py-3 border-t border-slate-200/60 bg-slate-50/40 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Page {page} / {totalPages} • Total {totalRows}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40"
+            >
+              Prev
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </motion.section>
 

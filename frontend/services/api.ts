@@ -39,6 +39,12 @@ export interface SubmitReportResponse {
 
 export interface GetReportsResponse {
   reports: ReportData[];
+  meta?: {
+    page: number;
+    page_size: number;
+    total: number;
+    total_pages: number;
+  };
 }
 
 export interface GetReportResponse {
@@ -94,6 +100,23 @@ export interface ReportAuditLog {
   assigned_to_user_id?: number | null;
   note?: string | null;
   created_at: string;
+}
+
+export interface NotificationItem {
+  id: number;
+  user_id: number;
+  title: string;
+  body: string;
+  type: string;
+  related_report_id?: number | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface SlaHighItem extends ReportData {
+  age_hours: number;
+  sla_due_at: string;
+  is_breached: boolean;
 }
 
 type ApiErrorPayload = {
@@ -183,10 +206,16 @@ export async function submitReport(payload: SubmitReportPayload): Promise<Submit
 export async function getReports(filters?: {
   priority?: PriorityLabel | "ALL";
   status?: ReportStatus | "ALL";
+  search?: string;
+  page?: number;
+  page_size?: number;
 }): Promise<GetReportsResponse> {
   const params = new URLSearchParams();
   if (filters?.priority && filters.priority !== "ALL") params.set("priority", filters.priority);
   if (filters?.status && filters.status !== "ALL") params.set("status", filters.status);
+  if (filters?.search?.trim()) params.set("search", filters.search.trim());
+  if (filters?.page) params.set("page", String(filters.page));
+  if (filters?.page_size) params.set("page_size", String(filters.page_size));
   const suffix = params.toString() ? `?${params.toString()}` : "";
 
   const res = await fetch(`${BASE_URL}/api/reports/${suffix}`, {
@@ -272,4 +301,43 @@ export async function exportReportMetricsCsv(): Promise<Blob> {
   });
   if (!res.ok) await parseApiError(res);
   return await res.blob();
+}
+
+export async function getSlaHighBoard(): Promise<{ items: SlaHighItem[] }> {
+  const res = await fetch(`${BASE_URL}/api/reports/metrics/sla/high`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { items: SlaHighItem[] };
+}
+
+export async function getNotifications(params?: {
+  unread_only?: boolean;
+  limit?: number;
+}): Promise<{ notifications: NotificationItem[]; unread_count: number }> {
+  const query = new URLSearchParams();
+  if (params?.unread_only) query.set("unread_only", "true");
+  if (params?.limit) query.set("limit", String(params.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const res = await fetch(`${BASE_URL}/api/notifications/${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { notifications: NotificationItem[]; unread_count: number };
+}
+
+export async function markNotificationRead(notificationId: number): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/notifications/${notificationId}/read`, {
+    method: "PATCH",
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/notifications/read-all`, {
+    method: "PATCH",
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
 }

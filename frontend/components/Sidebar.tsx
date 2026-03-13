@@ -1,13 +1,16 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, FileText, LogOut, UserCircle2 } from "lucide-react";
+import { Bell, LayoutDashboard, FileText, LogOut, UserCircle2, ShieldAlert } from "lucide-react";
 
 import { clearAuthSession, getAuthUser } from "@/lib/auth";
+import { getNotifications, markAllNotificationsRead } from "@/services/api";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="w-[18px] h-[18px]" /> },
+  { href: "/sla", label: "SLA Board", icon: <ShieldAlert className="w-[18px] h-[18px]" /> },
   { href: "/report", label: "New Report", icon: <FileText className="w-[18px] h-[18px]" /> },
 ];
 
@@ -15,10 +18,27 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const user = getAuthUser();
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const handleLogout = () => {
     clearAuthSession();
     router.push("/login");
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    getNotifications({ unread_only: true, limit: 1 })
+      .then((res) => setUnreadCount(res.unread_count))
+      .catch(() => setUnreadCount(0));
+  }, [user]);
+
+  const handleMarkAllRead = async () => {
+    try {
+      await markAllNotificationsRead();
+      setUnreadCount(0);
+    } catch {
+      // no-op
+    }
   };
 
   return (
@@ -62,6 +82,27 @@ export default function Sidebar() {
         </nav>
 
         <div className="mt-auto p-5 space-y-3">
+          {user && (
+            <div className="rounded-2xl border border-slate-800 bg-slate-800/40 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-slate-300" />
+                  <p className="text-xs font-semibold text-slate-300">Notifications</p>
+                </div>
+                {unreadCount > 0 && (
+                  <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                    {unreadCount}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={handleMarkAllRead}
+                className="mt-2 text-[11px] font-semibold text-teal-300 hover:underline"
+              >
+                Mark all as read
+              </button>
+            </div>
+          )}
           {user ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-800/40 p-4">
               <div className="flex items-center gap-2.5">

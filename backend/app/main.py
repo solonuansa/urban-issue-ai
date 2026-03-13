@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, report
+from app.api import auth, notification, report
 from app.config import BACKEND_CORS_ORIGINS, UPLOAD_DIR
 from app.core.database import init_db
 
@@ -25,6 +25,7 @@ app.add_middleware(
 # Include routers
 app.include_router(report.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
+app.include_router(notification.router, prefix="/api/notifications", tags=["Notifications"])
 
 
 @app.on_event("startup")

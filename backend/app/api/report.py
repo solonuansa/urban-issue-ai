@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import MAX_FILE_SIZE_MB, REPORT_RATE_LIMIT_PER_MINUTE, UPLOAD_DIR
@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_operator_or_admin
 from app.models.report_model import Report
 from app.models.report_audit_log import ReportAuditLog
+from app.models.notification_model import Notification
 from app.models.user_model import User
 from app.services.cv_service import classify_image
 from app.services.response_service import generate_response
@@ -36,6 +37,37 @@ VALID_TRANSITIONS = {
     "IN_REVIEW": {"IN_PROGRESS", "REJECTED"},
     "IN_PROGRESS": {"RESOLVED"},
 }
+
+
+def _create_notification(
+    db: Session,
+    *,
+    user_id: int | None,
+    title: str,
+    body: str,
+    related_report_id: int | None,
+    type_: str = "info",
+) -> None:
+    if not user_id:
+        return
+    db.add(
+        Notification(
+            user_id=user_id,
+            title=title,
+            body=body,
+            type=type_,
+            related_report_id=related_report_id,
+            is_read=False,
+        )
+    )
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _build_metrics_payload(db: Session) -> dict:
@@ -87,8 +119,10 @@ def _build_metrics_payload(db: Session) -> dict:
     )
     resolution_hours = []
     for created_at, resolved_at in resolved_reports:
-        if created_at and resolved_at:
-            delta = resolved_at - created_at
+        created_utc = _to_utc(created_at)
+        resolved_utc = _to_utc(resolved_at)
+        if created_utc and resolved_utc:
+            delta = resolved_utc - created_utc
             resolution_hours.append(delta.total_seconds() / 3600)
 
     mttr_hours = round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else 0.0
@@ -114,7 +148,9 @@ def _build_metrics_payload(db: Session) -> dict:
     )
     high_resolved_late = 0
     for created_at, resolved_at in high_resolved_reports:
-        if created_at and resolved_at and (resolved_at - created_at) > timedelta(days=2):
+        created_utc = _to_utc(created_at)
+        resolved_utc = _to_utc(resolved_at)
+        if created_utc and resolved_utc and (resolved_utc - created_utc) > timedelta(days=2):
             high_resolved_late += 1
 
     aging_backlog_over_7d = (
@@ -309,6 +345,9 @@ async def submit_report(
 def get_reports(
     priority: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     _: User = Depends(require_operator_or_admin),
 ):
@@ -329,8 +368,36 @@ def get_reports(
             )
         query = query.filter(Report.status == status_upper)
 
-    reports = query.order_by(Report.created_at.desc()).all()
-    return {"reports": [_serialize_report(r) for r in reports]}
+    if search:
+        query_text = search.strip().lower()
+        if query_text:
+            query = query.filter(
+                or_(
+                    func.lower(Report.issue_type).contains(query_text),
+                    func.lower(Report.severity_level).contains(query_text),
+                    func.lower(Report.priority_label).contains(query_text),
+                    func.lower(Report.status).contains(query_text),
+                    cast(Report.id, String).contains(query_text),
+                )
+            )
+
+    total = query.count()
+    reports = (
+        query.order_by(Report.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    return {
+        "reports": [_serialize_report(r) for r in reports],
+        "meta": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
 
 
 @router.get("/operators")
@@ -404,6 +471,23 @@ def assign_report_operator(
             note=note.strip() or "Assignee updated",
         )
     )
+    _create_notification(
+        db,
+        user_id=assignee.id,
+        title="New Report Assignment",
+        body=f"You were assigned to report #{report.id}.",
+        related_report_id=report.id,
+        type_="assignment",
+    )
+    if report.created_by_user_id and report.created_by_user_id != current_user.id:
+        _create_notification(
+            db,
+            user_id=report.created_by_user_id,
+            title="Report Assigned",
+            body=f"Your report #{report.id} has been assigned to operations.",
+            related_report_id=report.id,
+            type_="status_update",
+        )
     db.commit()
     db.refresh(report)
 
@@ -469,6 +553,24 @@ def update_report_status(
             note=resolution_note.strip() or None,
         )
     )
+    if report.created_by_user_id and report.created_by_user_id != current_user.id:
+        _create_notification(
+            db,
+            user_id=report.created_by_user_id,
+            title="Report Status Updated",
+            body=f"Your report #{report.id} moved to {status_upper}.",
+            related_report_id=report.id,
+            type_="status_update",
+        )
+    if report.assigned_to_user_id and report.assigned_to_user_id != current_user.id:
+        _create_notification(
+            db,
+            user_id=report.assigned_to_user_id,
+            title="Workflow Updated",
+            body=f"Report #{report.id} status is now {status_upper}.",
+            related_report_id=report.id,
+            type_="workflow",
+        )
 
     db.commit()
     db.refresh(report)
@@ -505,6 +607,40 @@ def get_report_audit_logs(
     )
 
     return {"logs": [_serialize_audit_log(log) for log in logs]}
+
+
+@router.get("/metrics/sla/high")
+def get_high_priority_sla_board(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    now_utc = datetime.now(timezone.utc)
+    high_reports = (
+        db.query(Report)
+        .filter(Report.priority_label == "HIGH")
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        .order_by(Report.created_at.asc())
+        .all()
+    )
+
+    items = []
+    for report in high_reports:
+        created_at = _to_utc(report.created_at)
+        if not created_at:
+            continue
+        age_hours = (now_utc - created_at).total_seconds() / 3600
+        due_at = created_at + timedelta(days=2)
+        items.append(
+            {
+                **_serialize_report(report),
+                "age_hours": round(age_hours, 2),
+                "sla_due_at": due_at,
+                "is_breached": now_utc > due_at,
+            }
+        )
+
+    items.sort(key=lambda x: (not x["is_breached"], -x["age_hours"]))
+    return {"items": items}
 
 
 @router.get("/metrics/summary")
