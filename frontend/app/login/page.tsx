@@ -49,45 +49,61 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 py-8">
-      <div className="app-card w-full max-w-md p-6 md:p-7">
-        <p className="app-section-title">{mode === "login" ? "Sign In" : "Create Account"}</p>
-        <h1 className="text-2xl font-semibold text-slate-900">
-          {mode === "login" ? "Welcome back" : "Register new user"}
-        </h1>
-        <p className="text-sm text-slate-500 mt-2">
-          Use operator/admin role for dashboard workflow features.
-        </p>
-        {mode === "login" && (
-          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            <p className="font-semibold text-slate-700">Demo accounts</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => fillDemoAccount("admin.demo@urban-issue.ai")}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                Use Demo Admin
-              </button>
-              <button
-                type="button"
-                onClick={() => fillDemoAccount("operator.demo@urban-issue.ai")}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                Use Demo Operator
-              </button>
-              <button
-                type="button"
-                onClick={() => fillDemoAccount("citizen.demo@urban-issue.ai")}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                Use Demo Citizen
-              </button>
-            </div>
+    <div className="min-h-screen px-4 py-8 md:px-8">
+      <div className="mx-auto grid max-w-6xl items-stretch gap-6 lg:grid-cols-2">
+        <section className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-teal-900 p-7 text-white md:p-10">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-200">Urban Issue AI</p>
+          <h1 className="mt-4 text-3xl font-semibold leading-tight md:text-4xl">
+            Pelaporan isu kota berbasis AI untuk operasi yang lebih cepat.
+          </h1>
+          <p className="mt-4 text-sm text-slate-200">
+            Warga bisa melapor cepat, tim operator bisa memprioritaskan area kritis dan memantau SLA dalam satu dashboard.
+          </p>
+          <div className="mt-8 space-y-3 text-sm text-slate-100">
+            <p>• AI klasifikasi issue + severity</p>
+            <p>• Hotspot risk map untuk area prioritas</p>
+            <p>• Workflow operasional dari NEW sampai RESOLVED</p>
           </div>
-        )}
+        </section>
 
-        <form className="mt-6 space-y-4" onSubmit={onSubmit}>
+        <section className="app-card w-full p-6 md:p-7">
+          <p className="app-section-title">{mode === "login" ? "Sign In" : "Create Account"}</p>
+          <h2 className="text-2xl font-semibold text-slate-900">
+            {mode === "login" ? "Welcome back" : "Register new user"}
+          </h2>
+          <p className="text-sm text-slate-500 mt-2">
+            Use operator/admin role for dashboard workflow features.
+          </p>
+          {mode === "login" && (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              <p className="font-semibold text-slate-700">Demo accounts</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => fillDemoAccount("admin.demo@urban-issue.ai")}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Use Demo Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fillDemoAccount("operator.demo@urban-issue.ai")}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Use Demo Operator
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fillDemoAccount("citizen.demo@urban-issue.ai")}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Use Demo Citizen
+                </button>
+              </div>
+            </div>
+          )}
+
+          <form className="mt-6 space-y-4" onSubmit={onSubmit}>
           {mode === "register" && (
             <div>
               <label className="text-xs font-semibold text-slate-600">Full name</label>
@@ -135,24 +151,25 @@ export default function LoginPage() {
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-xl bg-teal-700 text-white py-3 text-sm font-semibold hover:bg-teal-800 disabled:opacity-60"
-          >
-            {loading ? "Please wait..." : mode === "login" ? "Sign In" : "Register & Sign In"}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl bg-teal-700 text-white py-3 text-sm font-semibold hover:bg-teal-800 disabled:opacity-60"
+            >
+              {loading ? "Please wait..." : mode === "login" ? "Sign In" : "Register & Sign In"}
+            </button>
+          </form>
 
-        <div className="mt-5 flex items-center justify-between text-xs text-slate-500">
-          <button
-            className="font-semibold text-teal-700 hover:underline"
-            onClick={() => setMode((prev) => (prev === "login" ? "register" : "login"))}
-          >
-            {mode === "login" ? "Need account? Register" : "Already have account? Sign in"}
-          </button>
-          <Link href="/report" className="hover:underline">Continue as guest page</Link>
-        </div>
+          <div className="mt-5 flex items-center justify-between text-xs text-slate-500">
+            <button
+              className="font-semibold text-teal-700 hover:underline"
+              onClick={() => setMode((prev) => (prev === "login" ? "register" : "login"))}
+            >
+              {mode === "login" ? "Need account? Register" : "Already have account? Sign in"}
+            </button>
+            <Link href="/report" className="hover:underline">Continue as guest page</Link>
+          </div>
+        </section>
       </div>
     </div>
   );

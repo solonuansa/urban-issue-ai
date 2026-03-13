@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Manrope, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
+import TopAuthActions from "@/components/TopAuthActions";
 
 const manrope = Manrope({
   subsets: ["latin"],
@@ -27,7 +28,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       >
         <div className="flex min-h-screen">
           <Sidebar />
-          <main className="flex-1 min-w-0 pb-20 md:pb-0">{children}</main>
+          <main className="flex-1 min-w-0 pb-20 md:pb-0">
+            <TopAuthActions />
+            {children}
+          </main>
         </div>
       </body>
     </html>
