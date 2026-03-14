@@ -819,6 +819,177 @@ def get_report_analytics(
     return _build_metrics_payload(db)
 
 
+@router.get("/public/hotspots")
+def get_public_hotspots_for_citizens(
+    days: int = Query(default=14, ge=1, le=60),
+    issue_type: str = Query(default="pothole"),
+    grid_size: float = Query(default=0.01, ge=0.001, le=0.1),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    policy, policy_source = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    bucket_lat = _bucket_expr(Report.latitude, grid_size).label("bucket_lat")
+    bucket_lng = _bucket_expr(Report.longitude, grid_size).label("bucket_lng")
+
+    base_query = (
+        db.query(Report)
+        .filter(Report.created_at >= since)
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+    )
+
+    issue_type_normalized = issue_type.strip().lower()
+    if issue_type_normalized and issue_type_normalized != "all":
+        base_query = base_query.filter(func.lower(Report.issue_type) == issue_type_normalized)
+
+    rows = (
+        base_query.with_entities(
+            bucket_lat,
+            bucket_lng,
+            func.count(Report.id).label("count"),
+            func.sum(case((Report.priority_label == "HIGH", 1), else_=0)).label("high_count"),
+            func.sum(
+                case((Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")), 1), else_=0)
+            ).label("open_count"),
+        )
+        .group_by(bucket_lat, bucket_lng)
+        .order_by(func.count(Report.id).desc())
+        .all()
+    )
+
+    hotspots = []
+    for row in rows:
+        count = int(row.count)
+        high_count = int(row.high_count or 0)
+        open_count = int(row.open_count or 0)
+        risk_level, risk_score = _classify_hotspot_risk(count, high_count, open_count, policy)
+        hotspots.append(
+            {
+                "lat": float(row.bucket_lat),
+                "lng": float(row.bucket_lng),
+                "count": count,
+                "high_count": high_count,
+                "open_count": open_count,
+                "risk_level": risk_level,
+                "risk_score": risk_score,
+            }
+        )
+
+    hotspots.sort(
+        key=lambda item: (
+            item["risk_score"],
+            item["count"],
+            item["high_count"],
+            item["open_count"],
+        ),
+        reverse=True,
+    )
+
+    critical_areas = sum(1 for item in hotspots if item["risk_level"] == "CRITICAL")
+    high_areas = sum(1 for item in hotspots if item["risk_level"] == "HIGH")
+
+    return {
+        "hotspots": hotspots[:100],
+        "meta": {
+            "days": days,
+            "issue_type": issue_type_normalized,
+            "grid_size": grid_size,
+            "total_hotspots": len(hotspots),
+            "critical_areas": critical_areas,
+            "high_areas": high_areas,
+            "risk_policy": _serialize_hotspot_policy(policy, source=policy_source),
+        },
+        "advisory": {
+            "headline": "Waspada area dengan konsentrasi isu tinggi, terutama jalan berlubang.",
+            "tips": [
+                "Kurangi kecepatan saat melintas area risiko HIGH/CRITICAL.",
+                "Jaga jarak aman antar kendaraan untuk menghindari manuver mendadak.",
+                "Laporkan titik jalan berlubang baru agar penanganan lebih cepat.",
+            ],
+        },
+    }
+
+
+@router.get("/public/nearby-risk")
+def get_public_nearby_risk_for_citizens(
+    latitude: float = Query(..., ge=-90, le=90),
+    longitude: float = Query(..., ge=-180, le=180),
+    radius_km: float = Query(default=3.0, ge=0.2, le=20.0),
+    days: int = Query(default=30, ge=1, le=90),
+    issue_type: str = Query(default="pothole"),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    policy, _ = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    query = (
+        db.query(Report)
+        .filter(Report.created_at >= since)
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+    )
+
+    issue_type_normalized = issue_type.strip().lower()
+    if issue_type_normalized and issue_type_normalized != "all":
+        query = query.filter(func.lower(Report.issue_type) == issue_type_normalized)
+
+    reports = query.all()
+    nearby_items = []
+    for r in reports:
+        distance_km = haversine_distance(latitude, longitude, r.latitude, r.longitude)
+        if distance_km > radius_km:
+            continue
+        _, risk_score = _classify_hotspot_risk(
+            1,
+            1 if r.priority_label == "HIGH" else 0,
+            1 if r.status in ("NEW", "IN_REVIEW", "IN_PROGRESS") else 0,
+            policy,
+        )
+        nearby_items.append(
+            {
+                "id": r.id,
+                "issue_type": r.issue_type,
+                "priority_label": r.priority_label,
+                "status": r.status,
+                "latitude": r.latitude,
+                "longitude": r.longitude,
+                "distance_km": round(distance_km, 3),
+                "risk_score": risk_score,
+            }
+        )
+
+    nearby_items.sort(key=lambda item: (item["distance_km"], -item["risk_score"]))
+    nearby_items = nearby_items[:limit]
+
+    weighted_score = sum(
+        (item["risk_score"] * (1.0 / max(item["distance_km"], 0.1))) for item in nearby_items
+    )
+    if weighted_score >= 80 or any(item["priority_label"] == "HIGH" for item in nearby_items[:3]):
+        level = "HIGH"
+    elif weighted_score >= 30 or len(nearby_items) >= 6:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return {
+        "meta": {
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius_km": radius_km,
+            "days": days,
+            "issue_type": issue_type_normalized,
+            "count": len(nearby_items),
+            "risk_level": level,
+            "risk_score": round(weighted_score, 2),
+        },
+        "items": nearby_items,
+    }
+
+
 @router.get("/metrics/hotspots/policy")
 def get_hotspot_risk_policy(
     db: Session = Depends(get_db),

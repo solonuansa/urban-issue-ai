@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, LayoutDashboard, FileText, ShieldAlert } from "lucide-react";
+import { Bell, LayoutDashboard, FileText, ShieldAlert, MapPinned } from "lucide-react";
 
 import { getAuthUser, type AuthUser } from "@/lib/auth";
 import { getNotifications, markAllNotificationsRead } from "@/services/api";
@@ -38,6 +38,12 @@ const navItems: NavItem[] = [
     href: "/report",
     label: "New Report",
     icon: <FileText className="w-[18px] h-[18px]" />,
+    roles: ["citizen", "operator", "admin"],
+  },
+  {
+    href: "/safety-map",
+    label: "Safety Map",
+    icon: <MapPinned className="w-[18px] h-[18px]" />,
     roles: ["citizen", "operator", "admin"],
   },
 ];

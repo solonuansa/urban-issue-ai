@@ -459,6 +459,119 @@ export async function getHotspotReports(params: {
   };
 }
 
+export async function getCitizenHotspots(params?: {
+  days?: number;
+  issue_type?: "pothole" | "all";
+  grid_size?: number;
+}): Promise<{
+  hotspots: HotspotItem[];
+  meta: {
+    days: number;
+    issue_type: string;
+    grid_size: number;
+    total_hotspots: number;
+    critical_areas: number;
+    high_areas: number;
+    risk_policy: HotspotRiskPolicy;
+  };
+  advisory: {
+    headline: string;
+    tips: string[];
+  };
+}> {
+  const query = new URLSearchParams();
+  if (params?.days) query.set("days", String(params.days));
+  if (params?.issue_type) query.set("issue_type", params.issue_type);
+  if (params?.grid_size) query.set("grid_size", String(params.grid_size));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  const res = await fetch(`${BASE_URL}/api/reports/public/hotspots${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    hotspots: HotspotItem[];
+    meta: {
+      days: number;
+      issue_type: string;
+      grid_size: number;
+      total_hotspots: number;
+      critical_areas: number;
+      high_areas: number;
+      risk_policy: HotspotRiskPolicy;
+    };
+    advisory: {
+      headline: string;
+      tips: string[];
+    };
+  };
+}
+
+export async function getCitizenNearbyRisk(params: {
+  latitude: number;
+  longitude: number;
+  radius_km?: number;
+  days?: number;
+  issue_type?: "pothole" | "all";
+  limit?: number;
+}): Promise<{
+  meta: {
+    latitude: number;
+    longitude: number;
+    radius_km: number;
+    days: number;
+    issue_type: string;
+    count: number;
+    risk_level: "LOW" | "MEDIUM" | "HIGH";
+    risk_score: number;
+  };
+  items: Array<{
+    id: number;
+    issue_type: string;
+    priority_label: "HIGH" | "MEDIUM" | "LOW";
+    status: "NEW" | "IN_REVIEW" | "IN_PROGRESS" | "RESOLVED" | "REJECTED";
+    latitude: number;
+    longitude: number;
+    distance_km: number;
+    risk_score: number;
+  }>;
+}> {
+  const query = new URLSearchParams();
+  query.set("latitude", String(params.latitude));
+  query.set("longitude", String(params.longitude));
+  if (params.radius_km) query.set("radius_km", String(params.radius_km));
+  if (params.days) query.set("days", String(params.days));
+  if (params.issue_type) query.set("issue_type", params.issue_type);
+  if (params.limit) query.set("limit", String(params.limit));
+
+  const res = await fetch(`${BASE_URL}/api/reports/public/nearby-risk?${query.toString()}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    meta: {
+      latitude: number;
+      longitude: number;
+      radius_km: number;
+      days: number;
+      issue_type: string;
+      count: number;
+      risk_level: "LOW" | "MEDIUM" | "HIGH";
+      risk_score: number;
+    };
+    items: Array<{
+      id: number;
+      issue_type: string;
+      priority_label: "HIGH" | "MEDIUM" | "LOW";
+      status: "NEW" | "IN_REVIEW" | "IN_PROGRESS" | "RESOLVED" | "REJECTED";
+      latitude: number;
+      longitude: number;
+      distance_km: number;
+      risk_score: number;
+    }>;
+  };
+}
+
 export async function getNotifications(params?: {
   unread_only?: boolean;
   page?: number;
