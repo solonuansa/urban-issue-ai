@@ -1,56 +1,68 @@
-# Analisis Fitur dan Konteks Proyek Urban Issue AI
+# Analisis Fitur dan Konteks Proyek Urban Issue AI (Update 14 Maret 2026)
 
 ## 1. Konteks Produk
 
-Urban Issue AI adalah sistem pelaporan isu kota berbasis AI dengan dua kebutuhan utama:
+Urban Issue AI saat ini berkembang menjadi platform `incident intake + operational command + citizen safety intelligence`.
 
-1. `Citizen experience`: warga dapat melapor cepat dengan bukti foto + lokasi.
-2. `Operations control`: tim operator dapat memprioritaskan, mengelola workflow, dan memantau SLA.
-
-Dengan kata lain, produk ini bukan sekadar form pelaporan, tetapi platform `incident intake + triage + workflow + operational analytics`.
+Fokus produk terbagi jelas:
+1. `Citizen`: lapor isu cepat dan dapat insight keamanan area/rute.
+2. `Operator/Admin`: triage, assignment, workflow, SLA, dan kebijakan risiko area.
 
 ---
 
 ## 2. Kondisi Fitur Saat Ini (Current State)
 
-### 2.1 Intake dan Klasifikasi
+### 2.1 Intake, AI, dan Workflow Operasional
 
-- Submit laporan dengan upload gambar, geolocation picker, dan konteks lokasi.
-- Klasifikasi issue + severity dari CV service (dengan fallback heuristik).
-- Scoring urgency dan priority label (`LOW/MEDIUM/HIGH`).
-- Validasi upload file (tipe, ekstensi, size limit).
+- Submit laporan dengan upload gambar + geolocation picker.
+- Klasifikasi AI (`issue_type`, `severity`) + perhitungan urgency/priority (`LOW/MEDIUM/HIGH`).
+- Lifecycle operasional: `NEW -> IN_REVIEW -> IN_PROGRESS -> RESOLVED/REJECTED`.
+- Assignment operator + audit log status/assignment.
+- SLA board high-priority.
 
-### 2.2 Auth dan Role
+### 2.2 Dashboard Operator/Admin
 
-- Login/Register dengan JWT.
-- Role dasar: `citizen`, `operator`, `admin`.
-- Endpoint penting sudah diproteksi role.
+- KPI inti: total report, status breakdown, priority distribution.
+- Analytics lanjutan: MTTR, SLA breach high, aging backlog, resolution rate, top issue.
+- Export CSV analytics.
+- Hotspot map operasional:
+  - mode visual (`heatmap/circles`),
+  - ranking hotspot,
+  - detail report per bucket hotspot.
+- `Risk policy editor` untuk admin (DB override):
+  - bobot risiko,
+  - threshold score/count,
+  - validasi policy rule.
 
-### 2.3 Workflow Operasional
+### 2.3 Citizen Safety Intelligence (fitur baru)
 
-- Status lifecycle: `NEW -> IN_REVIEW -> IN_PROGRESS -> RESOLVED/REJECTED`.
-- Assignment operator.
-- Audit log status/assignment.
-- SLA board untuk high-priority open tickets.
+- Halaman `Safety Map` untuk citizen.
+- Endpoint publik-auth citizen:
+  - `/api/reports/public/hotspots`
+  - `/api/reports/public/nearby-risk`
+  - `/api/reports/public/hotspots/trend`
+- Kapabilitas safety:
+  - peta area rawan (default fokus `pothole`),
+  - indikator rute aman berbasis hotspot corridor,
+  - nearby risk berdasarkan lokasi saat ini (geolocation),
+  - proactive high-risk alert + CTA lapor bahaya,
+  - saran rute alternatif (waypoint + deep link Google Maps),
+  - trend harian open/high-priority issue,
+  - simpan rute favorit (localStorage).
 
-### 2.4 Dashboard & Observability Produk
+### 2.4 Auth, Role, dan UX Akses
 
-- KPI dan chart prioritas.
-- Trend incoming vs resolved 14 hari.
-- Advanced metrics:
-  - MTTR,
-  - high-priority SLA breach,
-  - aging backlog 7d+,
-  - resolution rate 14d,
-  - top issue types.
-- Export analytics CSV.
-- Search + pagination data report.
+- JWT auth + role (`citizen`, `operator`, `admin`).
+- Sidebar sudah menyesuaikan role (menu non-authorized disembunyikan).
+- Aksi auth dipusatkan di top-right (minimalis).
+- Login page di-redesign 2 kolom + quick demo account buttons.
 
-### 2.5 Notifikasi
+### 2.5 Demo & Bootstrap Data
 
-- In-app notifications untuk assignment/status update/workflow.
-- Notification center dengan filter, unread toggle, mark read/all read, pagination.
-- Sidebar unread badge dengan polling berkala.
+- Demo account otomatis saat startup backend (configurable via env).
+- Script seed demo report hotspot:
+  - `backend/scripts/seed_demo_data.py`
+  - idempotent (hapus demo lama, generate ulang cluster).
 
 ---
 
@@ -58,90 +70,81 @@ Dengan kata lain, produk ini bukan sekadar form pelaporan, tetapi platform `inci
 
 ### Kuat
 
-- End-to-end flow sudah solid dari report submit hingga workflow operator.
-- Fokus operasional sudah terasa (SLA, audit, analytics, assignment).
-- Arsitektur web modern (FastAPI + Next.js) dan cukup extensible.
+1. End-to-end operasi sudah matang dari intake sampai workflow/SLA.
+2. Geo-intelligence sudah nyata dipakai citizen dan operator.
+3. Policy risiko area sudah configurable (tidak hardcoded).
+4. Demoability project sangat baik (akun demo + seeded data).
 
-### Masih Risiko
+### Risiko yang Masih Ada
 
-1. `Model governance`: belum ada evaluasi model berkelanjutan (drift, dataset quality, threshold policy).
-2. `Migration strategy`: masih bergantung lightweight migration startup, belum Alembic penuh.
-3. `Realtime experience`: polling dipakai di beberapa area; belum event-driven (WebSocket/SSE).
-4. `Notification delivery`: baru in-app, belum ke channel eksternal (email/WA/Telegram).
-5. `Operational permission granularity`: role masih coarse-grained, belum per-feature permission matrix.
+1. `Migration governance`: masih lightweight migration, belum Alembic penuh.
+2. `Route safety model`: alternatif rute masih heuristik waypoint, belum graph routing engine.
+3. `Real-time`: polling masih dominan, belum event stream (SSE/WebSocket).
+4. `Data quality governance`: belum ada feedback loop label correction terstruktur.
+5. `Geospatial scale`: query geo masih sederhana, belum index/geo-engine untuk skala kota besar.
 
 ---
 
-## 4. Gap Analisis dan Rekomendasi Perbaikan
+## 4. Gap dan Rekomendasi Phase Berikutnya
 
-## 4.1 Prioritas Tinggi (Sprint Berikutnya)
+### 4.1 Prioritas Tinggi (Phase Selanjutnya)
 
-1. `Database migration formal (Alembic)`
-- Kenapa: mencegah risiko schema drift di production.
-- Output: migration scripts versioned, rollback strategy, deployment-safe schema changes.
+1. `Alembic migration formal`
+- Stabilitas schema production, rollback aman, traceability perubahan DB.
 
-2. `Report detail deep action hardening`
-- Tambah validasi business rule lebih ketat di detail action (misal wajib note saat reject/resolved).
-- Tambah visual status transition hints untuk operator.
+2. `Geo query hardening`
+- Tambah index lokasi + optimasi query hotspot/nearby.
+- Siapkan path ke PostGIS/geo-optimized storage jika volume naik.
 
-3. `SLA policy configurability`
-- Saat ini SLA high-coded.
-- Buat configurable by env/DB per severity/priority.
+3. `Safety route quality upgrade`
+- Integrasi engine rute nyata (OSRM/GraphHopper/Google Directions) agar alternatif rute berbasis jaringan jalan, bukan waypoint heuristik.
 
-4. `Notification UX maturity`
-- Grouping by report dan by date.
-- Mark as read otomatis saat detail report dibuka.
+4. `Citizen alert policy`
+- Aturan alert yang lebih tegas: kapan warning muncul, cooldown, severity-based messaging.
 
-## 4.2 Prioritas Menengah
+### 4.2 Prioritas Menengah
 
 1. `External notification channel`
-- Email atau WhatsApp untuk status kritikal.
-- Template bilingual (ID/EN) untuk user-facing message.
+- Email/WA/Telegram untuk alert kritikal.
 
-2. `Advanced filtering & saved views`
-- Simpan filter favorit operator.
-- Preset view: `breached`, `unassigned`, `stale >7d`, `high unresolved`.
+2. `Saved views untuk operator`
+- Preset dashboard (breached/unassigned/stale/high unresolved).
 
-3. `SLA breach root-cause analytics`
-- Breakdown breach by issue_type, assignee, wilayah.
+3. `Hotspot segmentation by administrative area`
+- Mapping bucket ke kecamatan/kelurahan untuk komunikasi lintas instansi.
 
-## 4.3 Prioritas Strategis
+### 4.3 Prioritas Strategis
 
-1. `Model Ops (MLOps-lite)`
-- Confidence calibration.
-- Human override feedback loop.
-- Label correction pipeline untuk retraining.
+1. `MLOps-lite`
+- Monitoring confidence drift + audit false positive/false negative.
 
-2. `Geo intelligence`
-- Heatmap cluster berdasarkan area.
-- Prioritization multiplier berbasis area criticality real (bukan hanya manual context).
+2. `Predictive safety`
+- Prediksi lonjakan issue berdasarkan historis + cuaca/event (opsional jangka menengah).
 
-3. `Performance & reliability`
-- Caching query heavy metrics.
-- Background jobs untuk perhitungan agregat.
-- Structured logs + tracing.
+3. `Reliability & observability`
+- Structured logging, tracing, dan alerting operasional backend.
 
 ---
 
-## 5. Saran KPI Produk/Operasional
+## 5. KPI yang Relevan Saat Ini
 
-KPI yang sebaiknya dipantau mingguan:
+### Operasional
+1. `MTTR by priority`
+2. `% high-priority breached`
+3. `assignment latency`
 
-1. `Median time to first operator action`
-2. `MTTR by priority`
-3. `% high-priority breached`
-4. `Resolution rate 7d/14d`
-5. `Assignment latency`
-6. `False positive/negative AI` (via manual audit sample)
+### Citizen Safety
+1. `% sesi citizen yang membuka Safety Map`
+2. `jumlah high-risk alert triggered`
+3. `% user yang klik rute alternatif`
+4. `jumlah laporan citizen dari CTA safety alert`
 
 ---
 
-## 6. Rekomendasi Urutan Implementasi (Pragmatis)
+## 6. Rekomendasi Urutan Implementasi Praktis
 
-1. Alembic migration + schema governance.
-2. Harden workflow policy (mandatory reason, role constraints, endpoint consistency).
-3. Notification UX polish + auto-read logic.
-4. External notification integration.
-5. MLOps baseline dan quality loop.
-
-Urutan ini menjaga keseimbangan antara `stabilitas sistem`, `nilai operasional`, dan `kesiapan scale`.
+1. Alembic + schema governance.
+2. Geo query/index optimization.
+3. Integrasi routing engine nyata.
+4. Alert policy + delivery channel eksternal.
+5. MLOps baseline untuk kualitas model dan safety scoring.

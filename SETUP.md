@@ -62,6 +62,8 @@ JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=120
 LOGIN_RATE_LIMIT_PER_MINUTE=10
 REPORT_RATE_LIMIT_PER_MINUTE=20
+LOG_LEVEL=INFO
+JSON_ACCESS_LOG=true
 HOTSPOT_RISK_WEIGHT_TOTAL=1.0
 HOTSPOT_RISK_WEIGHT_HIGH=1.8
 HOTSPOT_RISK_WEIGHT_OPEN=1.2
@@ -77,6 +79,24 @@ DEMO_ACCOUNT_PASSWORD=Demo12345!
 DEMO_CITIZEN_EMAIL=citizen.demo@urban-issue.ai
 DEMO_OPERATOR_EMAIL=operator.demo@urban-issue.ai
 DEMO_ADMIN_EMAIL=admin.demo@urban-issue.ai
+EXTERNAL_ALERTS_ENABLED=false
+EXTERNAL_ALERT_RECIPIENTS=
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=noreply@urban-issue.ai
+SMTP_USE_TLS=true
+ROUTING_ENGINE=osrm
+OSRM_BASE_URL=https://router.project-osrm.org
+ROUTING_TIMEOUT_SECONDS=8
+CITIZEN_ALERT_MEDIUM_SCORE_MIN=35
+CITIZEN_ALERT_HIGH_SCORE_MIN=70
+CITIZEN_ALERT_MEDIUM_COUNT_MIN=4
+CITIZEN_ALERT_HIGH_COUNT_MIN=6
+CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN=1
+CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN=90
+CITIZEN_ALERT_COOLDOWN_HIGH_MIN=30
 ```
 
 Catatan:
@@ -100,6 +120,10 @@ uvicorn app.main:app --reload --port 8000
 
 API docs tersedia di:
 - `http://localhost:8000/docs`
+
+Health checks:
+- `http://localhost:8000/healthz`
+- `http://localhost:8000/readyz`
 
 ### 4.2 Jalankan Frontend
 
@@ -148,6 +172,29 @@ Langkah ringkas:
 Contoh format:
 ```env
 DATABASE_URL=postgresql+psycopg2://<user>:<pass>@<host>:<port>/<db>
+```
+
+### 5.1 Migration Formal (Alembic)
+
+Mulai phase migration formal, backend sekarang sudah menyiapkan Alembic.
+
+Jalankan dari folder `backend/`:
+
+```bash
+alembic upgrade head
+```
+
+Membuat revision baru saat ada perubahan schema:
+
+```bash
+alembic revision --autogenerate -m "add_new_table_or_column"
+alembic upgrade head
+```
+
+Rollback satu langkah:
+
+```bash
+alembic downgrade -1
 ```
 
 ## 6. Deployment Backend ke Railway

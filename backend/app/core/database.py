@@ -60,6 +60,7 @@ def _run_lightweight_migrations() -> None:
             statements.append("ALTER TABLE reports ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     if not statements:
+        _ensure_report_indexes(inspector)
         return
 
     with engine.begin() as conn:
@@ -67,6 +68,30 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text(stmt))
         if updated_at_added and is_sqlite:
             conn.execute(text("UPDATE reports SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"))
+
+    _ensure_report_indexes(inspector)
+
+
+def _ensure_report_indexes(inspector) -> None:
+    existing = {idx["name"] for idx in inspector.get_indexes("reports")}
+    statements: list[str] = []
+
+    index_map = {
+        "ix_reports_created_at": "CREATE INDEX IF NOT EXISTS ix_reports_created_at ON reports (created_at)",
+        "ix_reports_status": "CREATE INDEX IF NOT EXISTS ix_reports_status ON reports (status)",
+        "ix_reports_issue_type": "CREATE INDEX IF NOT EXISTS ix_reports_issue_type ON reports (issue_type)",
+        "ix_reports_priority_label": "CREATE INDEX IF NOT EXISTS ix_reports_priority_label ON reports (priority_label)",
+        "ix_reports_lat_lng": "CREATE INDEX IF NOT EXISTS ix_reports_lat_lng ON reports (latitude, longitude)",
+    }
+    for name, stmt in index_map.items():
+        if name not in existing:
+            statements.append(stmt)
+
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 def get_db():

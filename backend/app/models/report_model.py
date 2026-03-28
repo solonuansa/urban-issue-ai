@@ -2,13 +2,20 @@
 Report Model – defines the database table schema for reports.
 """
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String
 from sqlalchemy.sql import func
 from app.core.database import Base
 
 
 class Report(Base):
     __tablename__ = "reports"
+    __table_args__ = (
+        Index("ix_reports_created_at", "created_at"),
+        Index("ix_reports_status", "status"),
+        Index("ix_reports_issue_type", "issue_type"),
+        Index("ix_reports_priority_label", "priority_label"),
+        Index("ix_reports_lat_lng", "latitude", "longitude"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     issue_type = Column(String, nullable=False)        # pothole | garbage

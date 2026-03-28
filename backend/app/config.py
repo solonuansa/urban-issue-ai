@@ -37,6 +37,14 @@ def _resolve_bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_str_env(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    val = raw.strip()
+    return val if val else default
+
+
 # Application settings
 APP_NAME = "AI Civic Issue Reporting"
 DEBUG = True
@@ -58,6 +66,8 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = _resolve_int_env("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 120)
 LOGIN_RATE_LIMIT_PER_MINUTE = _resolve_int_env("LOGIN_RATE_LIMIT_PER_MINUTE", 10)
 REPORT_RATE_LIMIT_PER_MINUTE = _resolve_int_env("REPORT_RATE_LIMIT_PER_MINUTE", 20)
+LOG_LEVEL = _resolve_str_env("LOG_LEVEL", "INFO").upper()
+JSON_ACCESS_LOG = _resolve_bool_env("JSON_ACCESS_LOG", True)
 
 # Urgency score weights
 WEIGHT_SEVERITY = 0.5
@@ -88,3 +98,27 @@ DEMO_ACCOUNT_PASSWORD = os.getenv("DEMO_ACCOUNT_PASSWORD", "Demo12345!")
 DEMO_CITIZEN_EMAIL = os.getenv("DEMO_CITIZEN_EMAIL", "citizen.demo@urban-issue.ai")
 DEMO_OPERATOR_EMAIL = os.getenv("DEMO_OPERATOR_EMAIL", "operator.demo@urban-issue.ai")
 DEMO_ADMIN_EMAIL = os.getenv("DEMO_ADMIN_EMAIL", "admin.demo@urban-issue.ai")
+
+# External notifications (optional)
+EXTERNAL_ALERTS_ENABLED = _resolve_bool_env("EXTERNAL_ALERTS_ENABLED", False)
+EXTERNAL_ALERT_RECIPIENTS = os.getenv("EXTERNAL_ALERT_RECIPIENTS", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = _resolve_int_env("SMTP_PORT", 587)
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "noreply@urban-issue.ai")
+SMTP_USE_TLS = _resolve_bool_env("SMTP_USE_TLS", True)
+
+# Route quality upgrade (optional external routing engine)
+ROUTING_ENGINE = os.getenv("ROUTING_ENGINE", "osrm").strip().lower()
+OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "https://router.project-osrm.org")
+ROUTING_TIMEOUT_SECONDS = _resolve_int_env("ROUTING_TIMEOUT_SECONDS", 8)
+
+# Citizen alert policy
+CITIZEN_ALERT_MEDIUM_SCORE_MIN = _resolve_float_env("CITIZEN_ALERT_MEDIUM_SCORE_MIN", 35.0)
+CITIZEN_ALERT_HIGH_SCORE_MIN = _resolve_float_env("CITIZEN_ALERT_HIGH_SCORE_MIN", 70.0)
+CITIZEN_ALERT_MEDIUM_COUNT_MIN = _resolve_int_env("CITIZEN_ALERT_MEDIUM_COUNT_MIN", 4)
+CITIZEN_ALERT_HIGH_COUNT_MIN = _resolve_int_env("CITIZEN_ALERT_HIGH_COUNT_MIN", 6)
+CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN = _resolve_int_env("CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN", 1)
+CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN = _resolve_int_env("CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN", 90)
+CITIZEN_ALERT_COOLDOWN_HIGH_MIN = _resolve_int_env("CITIZEN_ALERT_COOLDOWN_HIGH_MIN", 30)

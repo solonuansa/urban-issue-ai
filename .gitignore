@@ -21,3 +21,6 @@ frontend/.env.local
 # OS
 .DS_Store
 Thumbs.db
+
+# Codex runtime logs
+.codex-logs/

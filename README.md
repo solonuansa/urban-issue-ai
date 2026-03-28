@@ -74,6 +74,21 @@ urban-issue-ai/
 - Style guide mini UI: [`docs/style_guide_mini.md`](./docs/style_guide_mini.md)
 - Notebook training model: [`archive/README.md`](./archive/README.md)
 
+## Runtime Health
+
+- Liveness: `GET /healthz`
+- Readiness (DB check): `GET /readyz`
+
+## Database Migration
+
+Project sudah menyiapkan `Alembic` untuk migration formal schema.
+
+Jalankan dari direktori `backend/`:
+
+```bash
+alembic upgrade head
+```
+
 ## Demo Accounts (Local)
 
 Saat backend berjalan, sistem otomatis membuat akun demo (jika belum ada):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 import csv
+import math
 from io import StringIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,13 @@ from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import (
+    CITIZEN_ALERT_COOLDOWN_HIGH_MIN,
+    CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN,
+    CITIZEN_ALERT_HIGH_COUNT_MIN,
+    CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN,
+    CITIZEN_ALERT_HIGH_SCORE_MIN,
+    CITIZEN_ALERT_MEDIUM_COUNT_MIN,
+    CITIZEN_ALERT_MEDIUM_SCORE_MIN,
     HOTSPOT_RISK_CRITICAL_COUNT_MIN,
     HOTSPOT_RISK_CRITICAL_HIGH_COUNT_MIN,
     HOTSPOT_RISK_CRITICAL_SCORE_MIN,
@@ -36,8 +44,11 @@ from app.models.report_audit_log import ReportAuditLog
 from app.models.notification_model import Notification
 from app.models.user_model import User
 from app.services.cv_service import classify_image
+from app.services.external_notification_service import merge_alert_recipients, send_email_alert
+from app.services.routing_service import get_route_candidates
 from app.services.response_service import generate_response
 from app.services.urgency_service import calculate_urgency
+from app.utils.admin_area_utils import lookup_admin_area
 from app.utils.geo_utils import haversine_distance
 from app.utils.rate_limiter import rate_limiter
 
@@ -165,6 +176,75 @@ def _create_notification(
     )
 
 
+def _notify_high_priority_submission(db: Session, report: Report, reporter_name: str) -> None:
+    if report.priority_label != "HIGH":
+        return
+
+    recipients = db.query(User).filter(User.role.in_(("operator", "admin"))).all()
+    operator_admin_emails = [u.email for u in recipients if u.email]
+
+    for user in recipients:
+        _create_notification(
+            db,
+            user_id=user.id,
+            title="High Priority Report Submitted",
+            body=f"Report #{report.id} requires immediate triage.",
+            related_report_id=report.id,
+            type_="high_priority_alert",
+        )
+
+    subject = f"[Urban Issue AI] HIGH priority report #{report.id}"
+    body = (
+        "A high priority civic issue has been submitted.\n\n"
+        f"Report ID: {report.id}\n"
+        f"Issue Type: {report.issue_type}\n"
+        f"Severity: {report.severity_level}\n"
+        f"Priority: {report.priority_label}\n"
+        f"Status: {report.status}\n"
+        f"Location: {report.latitude}, {report.longitude}\n"
+        f"Reporter: {reporter_name}\n"
+    )
+    send_email_alert(
+        subject=subject,
+        body=body,
+        recipients=merge_alert_recipients(operator_admin_emails),
+    )
+
+
+def _notify_status_change_email(
+    db: Session,
+    *,
+    report: Report,
+    previous_status: str,
+    new_status: str,
+    changed_by_name: str,
+) -> None:
+    recipient_candidates: list[str] = []
+    if report.created_by_user_id:
+        creator = db.query(User).filter(User.id == report.created_by_user_id).first()
+        if creator and creator.email:
+            recipient_candidates.append(creator.email)
+    if report.assigned_to_user_id:
+        assignee = db.query(User).filter(User.id == report.assigned_to_user_id).first()
+        if assignee and assignee.email:
+            recipient_candidates.append(assignee.email)
+
+    subject = f"[Urban Issue AI] Report #{report.id} moved to {new_status}"
+    body = (
+        "A report status has been updated.\n\n"
+        f"Report ID: {report.id}\n"
+        f"Issue Type: {report.issue_type}\n"
+        f"Previous Status: {previous_status}\n"
+        f"New Status: {new_status}\n"
+        f"Updated By: {changed_by_name}\n"
+    )
+    send_email_alert(
+        subject=subject,
+        body=body,
+        recipients=merge_alert_recipients(recipient_candidates),
+    )
+
+
 def _to_utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
@@ -205,6 +285,135 @@ def _classify_hotspot_risk(
     if risk_score >= policy["medium_score_min"] or count >= policy["medium_count_min"]:
         return "MEDIUM", round(risk_score, 2)
     return "LOW", round(risk_score, 2)
+
+
+def _aggregate_hotspots_by_admin_area(hotspots: list[dict], policy: dict) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for item in hotspots:
+        area = lookup_admin_area(item["lat"], item["lng"])
+        if not area:
+            continue
+        key = area["id"]
+        bucket = grouped.setdefault(
+            key,
+            {
+                "area_id": area["id"],
+                "area_name": area["name"],
+                "city": area["city"],
+                "hotspot_count": 0,
+                "report_count": 0,
+                "high_count": 0,
+                "open_count": 0,
+                "risk_score": 0.0,
+            },
+        )
+        bucket["hotspot_count"] += 1
+        bucket["report_count"] += int(item["count"])
+        bucket["high_count"] += int(item["high_count"])
+        bucket["open_count"] += int(item["open_count"])
+        bucket["risk_score"] += float(item["risk_score"])
+
+    segments = []
+    for row in grouped.values():
+        risk_level, _ = _classify_hotspot_risk(
+            row["report_count"],
+            row["high_count"],
+            row["open_count"],
+            policy,
+        )
+        row["risk_score"] = round(row["risk_score"], 2)
+        row["risk_level"] = risk_level
+        segments.append(row)
+
+    segments.sort(
+        key=lambda x: (
+            x["risk_score"],
+            x["report_count"],
+            x["high_count"],
+            x["hotspot_count"],
+        ),
+        reverse=True,
+    )
+    return segments
+
+
+def _to_maps_url(start_lat: float, start_lng: float, end_lat: float, end_lng: float) -> str:
+    return (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={start_lat},{start_lng}"
+        f"&destination={end_lat},{end_lng}"
+        "&travelmode=driving"
+    )
+
+
+def _to_route_label(rank: int) -> str:
+    if rank == 1:
+        return "Rute Utama"
+    if rank == 2:
+        return "Alternatif A"
+    if rank == 3:
+        return "Alternatif B"
+    return f"Alternatif {rank - 1}"
+
+
+def _build_citizen_alert_policy_payload(
+    *,
+    risk_level: str,
+    weighted_score: float,
+    count: int,
+    nearby_items: list[dict],
+) -> dict:
+    near_high_priority = sum(1 for item in nearby_items if item["priority_label"] == "HIGH")
+    reasons: list[str] = []
+    should_alert = False
+    message = "Kondisi area relatif aman. Tetap berhati-hati saat berkendara."
+    cooldown_min = 0
+
+    if (
+        risk_level == "HIGH"
+        and (
+            weighted_score >= CITIZEN_ALERT_HIGH_SCORE_MIN
+            or count >= CITIZEN_ALERT_HIGH_COUNT_MIN
+            or near_high_priority >= CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN
+        )
+    ):
+        should_alert = True
+        cooldown_min = CITIZEN_ALERT_COOLDOWN_HIGH_MIN
+        message = (
+            "Peringatan risiko tinggi. Kurangi kecepatan, jaga jarak aman, dan "
+            "pertimbangkan rute alternatif."
+        )
+        reasons = [
+            f"score>={CITIZEN_ALERT_HIGH_SCORE_MIN}",
+            f"count>={CITIZEN_ALERT_HIGH_COUNT_MIN}",
+            f"high_priority_near>={CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN}",
+        ]
+    elif (
+        risk_level == "MEDIUM"
+        and (
+            weighted_score >= CITIZEN_ALERT_MEDIUM_SCORE_MIN
+            or count >= CITIZEN_ALERT_MEDIUM_COUNT_MIN
+        )
+    ):
+        should_alert = True
+        cooldown_min = CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN
+        message = (
+            "Area cukup berisiko. Tingkatkan kewaspadaan terhadap lubang jalan "
+            "dan potensi manuver mendadak."
+        )
+        reasons = [
+            f"score>={CITIZEN_ALERT_MEDIUM_SCORE_MIN}",
+            f"count>={CITIZEN_ALERT_MEDIUM_COUNT_MIN}",
+        ]
+
+    return {
+        "should_alert": should_alert,
+        "level": risk_level,
+        "message": message,
+        "cooldown_minutes": cooldown_min,
+        "near_high_priority": near_high_priority,
+        "reasons": reasons,
+    }
 
 
 def _apply_hotspot_filters(
@@ -499,6 +708,8 @@ async def submit_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    _notify_high_priority_submission(db, report, current_user.full_name)
+    db.commit()
 
     data = _serialize_report(report)
     data["cv_confidence"] = cv_result.get("confidence", 0.0)
@@ -739,6 +950,13 @@ def update_report_status(
             related_report_id=report.id,
             type_="workflow",
         )
+    _notify_status_change_email(
+        db,
+        report=report,
+        previous_status=previous_status,
+        new_status=status_upper,
+        changed_by_name=current_user.full_name,
+    )
 
     db.commit()
     db.refresh(report)
@@ -912,6 +1130,76 @@ def get_public_hotspots_for_citizens(
     }
 
 
+@router.get("/public/hotspots/areas")
+def get_public_hotspot_area_segments_for_citizens(
+    days: int = Query(default=14, ge=1, le=60),
+    issue_type: str = Query(default="pothole"),
+    grid_size: float = Query(default=0.01, ge=0.001, le=0.1),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    policy, policy_source = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    bucket_lat = _bucket_expr(Report.latitude, grid_size).label("bucket_lat")
+    bucket_lng = _bucket_expr(Report.longitude, grid_size).label("bucket_lng")
+
+    base_query = (
+        db.query(Report)
+        .filter(Report.created_at >= since)
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+    )
+    issue_type_normalized = issue_type.strip().lower()
+    if issue_type_normalized and issue_type_normalized != "all":
+        base_query = base_query.filter(func.lower(Report.issue_type) == issue_type_normalized)
+
+    rows = (
+        base_query.with_entities(
+            bucket_lat,
+            bucket_lng,
+            func.count(Report.id).label("count"),
+            func.sum(case((Report.priority_label == "HIGH", 1), else_=0)).label("high_count"),
+            func.sum(
+                case((Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")), 1), else_=0)
+            ).label("open_count"),
+        )
+        .group_by(bucket_lat, bucket_lng)
+        .order_by(func.count(Report.id).desc())
+        .all()
+    )
+
+    hotspots = []
+    for row in rows:
+        count = int(row.count)
+        high_count = int(row.high_count or 0)
+        open_count = int(row.open_count or 0)
+        risk_level, risk_score = _classify_hotspot_risk(count, high_count, open_count, policy)
+        hotspots.append(
+            {
+                "lat": float(row.bucket_lat),
+                "lng": float(row.bucket_lng),
+                "count": count,
+                "high_count": high_count,
+                "open_count": open_count,
+                "risk_level": risk_level,
+                "risk_score": risk_score,
+            }
+        )
+
+    segments = _aggregate_hotspots_by_admin_area(hotspots, policy)
+    return {
+        "areas": segments[:20],
+        "meta": {
+            "days": days,
+            "issue_type": issue_type_normalized,
+            "grid_size": grid_size,
+            "total_areas": len(segments),
+            "risk_policy": _serialize_hotspot_policy(policy, source=policy_source),
+        },
+    }
+
+
 @router.get("/public/nearby-risk")
 def get_public_nearby_risk_for_citizens(
     latitude: float = Query(..., ge=-90, le=90),
@@ -927,10 +1215,17 @@ def get_public_nearby_risk_for_citizens(
     _validate_hotspot_policy(policy)
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
+    lat_delta = radius_km / 111.0
+    cos_lat = max(abs(math.cos(math.radians(latitude))), 0.01)
+    lng_delta = radius_km / (111.0 * cos_lat)
     query = (
         db.query(Report)
         .filter(Report.created_at >= since)
         .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        .filter(Report.latitude >= latitude - lat_delta)
+        .filter(Report.latitude <= latitude + lat_delta)
+        .filter(Report.longitude >= longitude - lng_delta)
+        .filter(Report.longitude <= longitude + lng_delta)
     )
 
     issue_type_normalized = issue_type.strip().lower()
@@ -974,6 +1269,13 @@ def get_public_nearby_risk_for_citizens(
         level = "MEDIUM"
     else:
         level = "LOW"
+    weighted_score = round(weighted_score, 2)
+    alert_payload = _build_citizen_alert_policy_payload(
+        risk_level=level,
+        weighted_score=weighted_score,
+        count=len(nearby_items),
+        nearby_items=nearby_items,
+    )
 
     return {
         "meta": {
@@ -984,9 +1286,178 @@ def get_public_nearby_risk_for_citizens(
             "issue_type": issue_type_normalized,
             "count": len(nearby_items),
             "risk_level": level,
-            "risk_score": round(weighted_score, 2),
+            "risk_score": weighted_score,
+            "alert": alert_payload,
+            "alert_policy": {
+                "medium_score_min": CITIZEN_ALERT_MEDIUM_SCORE_MIN,
+                "high_score_min": CITIZEN_ALERT_HIGH_SCORE_MIN,
+                "medium_count_min": CITIZEN_ALERT_MEDIUM_COUNT_MIN,
+                "high_count_min": CITIZEN_ALERT_HIGH_COUNT_MIN,
+                "high_priority_near_min": CITIZEN_ALERT_HIGH_PRIORITY_NEAR_MIN,
+                "cooldown_medium_min": CITIZEN_ALERT_COOLDOWN_MEDIUM_MIN,
+                "cooldown_high_min": CITIZEN_ALERT_COOLDOWN_HIGH_MIN,
+            },
         },
         "items": nearby_items,
+    }
+
+
+@router.get("/public/route-safety")
+def get_public_route_safety_for_citizens(
+    start_lat: float = Query(..., ge=-90, le=90),
+    start_lng: float = Query(..., ge=-180, le=180),
+    end_lat: float = Query(..., ge=-90, le=90),
+    end_lng: float = Query(..., ge=-180, le=180),
+    days: int = Query(default=30, ge=1, le=90),
+    issue_type: str = Query(default="pothole"),
+    corridor_km: float = Query(default=0.4, ge=0.1, le=2.0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    policy, _ = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    min_lat = min(start_lat, end_lat) - 0.08
+    max_lat = max(start_lat, end_lat) + 0.08
+    min_lng = min(start_lng, end_lng) - 0.08
+    max_lng = max(start_lng, end_lng) + 0.08
+
+    query = (
+        db.query(Report)
+        .filter(Report.created_at >= since)
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+        .filter(Report.latitude >= min_lat)
+        .filter(Report.latitude <= max_lat)
+        .filter(Report.longitude >= min_lng)
+        .filter(Report.longitude <= max_lng)
+    )
+    issue_type_normalized = issue_type.strip().lower()
+    if issue_type_normalized and issue_type_normalized != "all":
+        query = query.filter(func.lower(Report.issue_type) == issue_type_normalized)
+    reports = query.all()
+
+    candidates = get_route_candidates(start_lat, start_lng, end_lat, end_lng)
+    route_items = []
+    for idx, candidate in enumerate(candidates, start=1):
+        points = candidate["points"]
+        if not points:
+            continue
+
+        total_score = 0.0
+        near_count = 0
+        high_count = 0
+        critical_proximity = 0
+
+        for report in reports:
+            min_distance_km = min(
+                haversine_distance(report.latitude, report.longitude, p_lat, p_lng)
+                for p_lat, p_lng in points[:: max(1, len(points) // 50)]
+            )
+            if min_distance_km > corridor_km:
+                continue
+
+            near_count += 1
+            if report.priority_label == "HIGH":
+                high_count += 1
+            if min_distance_km <= 0.15:
+                critical_proximity += 1
+
+            base_weight = 2.2 if report.priority_label == "HIGH" else 1.0
+            total_score += base_weight / max(min_distance_km, 0.08)
+
+        if critical_proximity >= 2 or total_score >= 40:
+            risk_level = "HIGH"
+        elif high_count >= 2 or total_score >= 18:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        route_items.append(
+            {
+                "rank": idx,
+                "label": _to_route_label(idx),
+                "source": candidate.get("source", "fallback"),
+                "distance_km": round(float(candidate.get("distance_m", 0.0)) / 1000, 2),
+                "duration_min": round(float(candidate.get("duration_s", 0.0)) / 60, 1),
+                "risk_level": risk_level,
+                "risk_score": round(total_score, 2),
+                "near_count": near_count,
+                "high_count": high_count,
+                "maps_url": _to_maps_url(start_lat, start_lng, end_lat, end_lng),
+            }
+        )
+
+    route_items.sort(key=lambda x: (x["risk_score"], x["high_count"], x["near_count"]))
+    best = route_items[0] if route_items else None
+
+    return {
+        "meta": {
+            "days": days,
+            "issue_type": issue_type_normalized,
+            "corridor_km": corridor_km,
+            "candidate_count": len(route_items),
+        },
+        "best": best,
+        "routes": route_items,
+    }
+
+
+@router.get("/public/hotspots/trend")
+def get_public_hotspot_trend_for_citizens(
+    days: int = Query(default=14, ge=7, le=60),
+    issue_type: str = Query(default="pothole"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    since = datetime.now(timezone.utc) - timedelta(days=days - 1)
+    query = (
+        db.query(Report)
+        .filter(Report.created_at >= since)
+        .filter(Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")))
+    )
+
+    issue_type_normalized = issue_type.strip().lower()
+    if issue_type_normalized and issue_type_normalized != "all":
+        query = query.filter(func.lower(Report.issue_type) == issue_type_normalized)
+
+    rows = (
+        query.with_entities(
+            func.date(Report.created_at).label("day"),
+            func.count(Report.id).label("incoming"),
+            func.sum(case((Report.priority_label == "HIGH", 1), else_=0)).label("high_priority"),
+        )
+        .group_by(func.date(Report.created_at))
+        .order_by(func.date(Report.created_at).asc())
+        .all()
+    )
+
+    row_map = {
+        str(r.day): {
+            "incoming": int(r.incoming),
+            "high_priority": int(r.high_priority or 0),
+        }
+        for r in rows
+    }
+
+    trend = []
+    for i in range(days):
+        day = (since + timedelta(days=i)).date().isoformat()
+        metrics = row_map.get(day, {"incoming": 0, "high_priority": 0})
+        trend.append(
+            {
+                "date": day,
+                "incoming": metrics["incoming"],
+                "high_priority": metrics["high_priority"],
+            }
+        )
+
+    return {
+        "meta": {
+            "days": days,
+            "issue_type": issue_type_normalized,
+        },
+        "trend": trend,
     }
 
 
@@ -1143,6 +1614,71 @@ def get_reports_by_hotspot_bucket(
             "grid_size": grid_size,
             "days": days,
             "count": len(items),
+        },
+    }
+
+
+@router.get("/metrics/hotspots/areas")
+def get_hotspot_segments_by_admin_area(
+    days: int = Query(default=14, ge=1, le=180),
+    status_filter: str | None = Query(default="OPEN", alias="status"),
+    priority: str | None = Query(default=None),
+    grid_size: float = Query(default=0.01, ge=0.001, le=0.1),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_operator_or_admin),
+):
+    policy, policy_source = _get_hotspot_policy(db)
+    _validate_hotspot_policy(policy)
+
+    bucket_lat = _bucket_expr(Report.latitude, grid_size).label("bucket_lat")
+    bucket_lng = _bucket_expr(Report.longitude, grid_size).label("bucket_lng")
+    base_query = _apply_hotspot_filters(
+        db.query(Report),
+        days=days,
+        status_filter=status_filter,
+        priority=priority,
+    )
+    rows = (
+        base_query.with_entities(
+            bucket_lat,
+            bucket_lng,
+            func.count(Report.id).label("count"),
+            func.sum(case((Report.priority_label == "HIGH", 1), else_=0)).label("high_count"),
+            func.sum(
+                case((Report.status.in_(("NEW", "IN_REVIEW", "IN_PROGRESS")), 1), else_=0)
+            ).label("open_count"),
+        )
+        .group_by(bucket_lat, bucket_lng)
+        .order_by(func.count(Report.id).desc())
+        .all()
+    )
+
+    hotspots = []
+    for row in rows:
+        count = int(row.count)
+        high_count = int(row.high_count or 0)
+        open_count = int(row.open_count or 0)
+        risk_level, risk_score = _classify_hotspot_risk(count, high_count, open_count, policy)
+        hotspots.append(
+            {
+                "lat": float(row.bucket_lat),
+                "lng": float(row.bucket_lng),
+                "count": count,
+                "high_count": high_count,
+                "open_count": open_count,
+                "risk_level": risk_level,
+                "risk_score": risk_score,
+            }
+        )
+
+    segments = _aggregate_hotspots_by_admin_area(hotspots, policy)
+    return {
+        "areas": segments,
+        "meta": {
+            "days": days,
+            "grid_size": grid_size,
+            "total_areas": len(segments),
+            "risk_policy": _serialize_hotspot_policy(policy, source=policy_source),
         },
     }
 
