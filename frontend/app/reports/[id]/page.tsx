@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ClipboardList } from "lucide-react";
+import { ArrowLeft, ClipboardList, RotateCw } from "lucide-react";
 
 import { clearAuthSession, getAuthUser } from "@/lib/auth";
 import {
   assignReportOperator,
+  checkBackendHealth,
   getMe,
   getOperators,
   getReport,
@@ -40,6 +41,11 @@ export default function ReportDetailPage() {
   const [pendingAction, setPendingAction] = useState<"status" | "assign" | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [healthChecking, setHealthChecking] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!Number.isFinite(reportId) || reportId <= 0) {
@@ -86,6 +92,14 @@ export default function ReportDetailPage() {
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    if (!error) return;
+    const nonDismissable = error.toLowerCase().includes("invalid report id");
+    if (nonDismissable) return;
+    const timer = setTimeout(() => setError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   const onAssign = async () => {
     if (!report || !assigneeId) return;
     setPendingAction("assign");
@@ -120,6 +134,27 @@ export default function ReportDetailPage() {
     }
   };
 
+  const runHealthCheck = async () => {
+    setHealthChecking(true);
+    try {
+      const res = await checkBackendHealth();
+      const checkedAt = new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      setHealthStatus({
+        ok: res.status === "ok",
+        message: `Backend reachable (status: ${res.status}) - checked at ${checkedAt}.`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to reach backend health endpoint.";
+      setHealthStatus({ ok: false, message });
+      setError(message);
+    } finally {
+      setHealthChecking(false);
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:px-8 md:py-8 space-y-6">
       <section className="app-card p-5 md:p-7">
@@ -129,11 +164,62 @@ export default function ReportDetailPage() {
         </Link>
         <h1 className="text-2xl md:text-3xl font-semibold text-slate-900">Report Detail #{reportId}</h1>
         <p className="text-sm text-slate-500 mt-2">Complete detail with workflow and audit history.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={fetchData}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <RotateCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+          <button
+            onClick={runHealthCheck}
+            disabled={healthChecking}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RotateCw className={`w-4 h-4 ${healthChecking ? "animate-spin" : ""}`} />
+            Check backend health
+          </button>
+        </div>
       </section>
 
       {error && (
-        <section className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
-          {error}
+        <section className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p>{error}</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchData}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        </section>
+      )}
+
+      {healthStatus && (
+        <section
+          className={`rounded-2xl px-5 py-3 text-sm flex items-center justify-between gap-3 ${
+            healthStatus.ok
+              ? "border border-teal-200 bg-teal-50 text-teal-800"
+              : "border border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <p>{healthStatus.message}</p>
+          <button
+            onClick={() => setHealthStatus(null)}
+            className={`rounded-md border bg-white px-2.5 py-1 text-xs font-semibold ${
+              healthStatus.ok ? "border-teal-200 text-teal-700" : "border-amber-200 text-amber-700"
+            }`}
+          >
+            Close
+          </button>
         </section>
       )}
 
@@ -231,28 +317,57 @@ export default function ReportDetailPage() {
             {logs.length === 0 ? (
               <p className="text-sm text-slate-500">No audit logs found.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200">
-                      {["Time", "Prev", "New", "By", "Assigned", "Note"].map((h) => (
-                        <th key={h} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {logs.map((log) => (
-                      <tr key={log.id} className="border-b border-slate-100">
-                        <td className="px-3 py-2 text-xs text-slate-600">{new Date(log.created_at).toLocaleString("en-GB")}</td>
-                        <td className="px-3 py-2 text-xs">{log.previous_status ?? "-"}</td>
-                        <td className="px-3 py-2 text-xs">{log.new_status ?? "-"}</td>
-                        <td className="px-3 py-2 text-xs">#{log.changed_by_user_id}</td>
-                        <td className="px-3 py-2 text-xs">{log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}</td>
-                        <td className="px-3 py-2 text-xs text-slate-600">{log.note ?? "-"}</td>
+              <div className="space-y-2">
+                <div className="md:hidden space-y-2">
+                  {logs.map((log) => (
+                    <article key={log.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        {new Date(log.created_at).toLocaleString("en-GB")}
+                      </p>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                        <p className="text-slate-500">
+                          Prev: <span className="font-medium text-slate-700">{log.previous_status ?? "-"}</span>
+                        </p>
+                        <p className="text-slate-500">
+                          New: <span className="font-medium text-slate-700">{log.new_status ?? "-"}</span>
+                        </p>
+                        <p className="text-slate-500">
+                          By: <span className="font-medium text-slate-700">#{log.changed_by_user_id}</span>
+                        </p>
+                        <p className="text-slate-500">
+                          Assigned:{" "}
+                          <span className="font-medium text-slate-700">
+                            {log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}
+                          </span>
+                        </p>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-600">Note: {log.note ?? "-"}</p>
+                    </article>
+                  ))}
+                </div>
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200">
+                        {["Time", "Prev", "New", "By", "Assigned", "Note"].map((h) => (
+                          <th key={h} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">{h}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {logs.map((log) => (
+                        <tr key={log.id} className="border-b border-slate-100">
+                          <td className="px-3 py-2 text-xs text-slate-600">{new Date(log.created_at).toLocaleString("en-GB")}</td>
+                          <td className="px-3 py-2 text-xs">{log.previous_status ?? "-"}</td>
+                          <td className="px-3 py-2 text-xs">{log.new_status ?? "-"}</td>
+                          <td className="px-3 py-2 text-xs">#{log.changed_by_user_id}</td>
+                          <td className="px-3 py-2 text-xs">{log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}</td>
+                          <td className="px-3 py-2 text-xs text-slate-600">{log.note ?? "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </section>

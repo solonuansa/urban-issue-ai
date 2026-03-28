@@ -3,47 +3,32 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { RefreshCw } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 import HotspotMap from "@/components/HotspotMap";
-import { getCitizenHotspots, getCitizenNearbyRisk, type HotspotItem } from "@/services/api";
+import {
+  checkBackendHealth,
+  getCitizenHotspotAreas,
+  getCitizenHotspots,
+  getCitizenRouteSafety,
+  getCitizenHotspotTrend,
+  getCitizenNearbyRisk,
+  type HotspotAreaSegment,
+  type HotspotItem,
+} from "@/services/api";
 
-function pointToSegmentDistance(
-  px: number,
-  py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number
-): number {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  if (dx === 0 && dy === 0) {
-    return Math.hypot(px - x1, py - y1);
-  }
-  const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
-  const clamped = Math.max(0, Math.min(1, t));
-  const cx = x1 + clamped * dx;
-  const cy = y1 + clamped * dy;
-  return Math.hypot(px - cx, py - cy);
-}
+type SavedRoute = {
+  id: string;
+  name: string;
+  startLat: string;
+  startLng: string;
+  endLat: string;
+  endLng: string;
+};
 
-function toMapsDirUrl(
-  startLat: number,
-  startLng: number,
-  endLat: number,
-  endLng: number,
-  waypointLat: number,
-  waypointLng: number
-): string {
-  const params = new URLSearchParams({
-    api: "1",
-    origin: `${startLat},${startLng}`,
-    destination: `${endLat},${endLng}`,
-    waypoints: `${waypointLat},${waypointLng}`,
-    travelmode: "driving",
-  });
-  return `https://www.google.com/maps/dir/?${params.toString()}`;
-}
+const SAVED_ROUTES_KEY = "urban_issue_safety_saved_routes";
+const ALERT_COOLDOWN_KEY = "urban_issue_alert_cooldown";
 
 export default function SafetyMapPage() {
   const router = useRouter();
@@ -66,9 +51,48 @@ export default function SafetyMapPage() {
     level: "LOW" | "MEDIUM" | "HIGH";
     score: number;
     count: number;
+    alert: {
+      should_alert: boolean;
+      level: "LOW" | "MEDIUM" | "HIGH";
+      message: string;
+      cooldown_minutes: number;
+    };
     items: Array<{ id: number; issue_type: string; distance_km: number; priority_label: string }>;
   } | null>(null);
   const [dismissAlert, setDismissAlert] = useState(false);
+  const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
+  const [routeName, setRouteName] = useState("");
+  const [trendData, setTrendData] = useState<Array<{ date: string; incoming: number; high_priority: number }>>([]);
+  const [areaSegments, setAreaSegments] = useState<HotspotAreaSegment[]>([]);
+  const [routeSafety, setRouteSafety] = useState<{
+    best: {
+      label: string;
+      risk_level: "LOW" | "MEDIUM" | "HIGH";
+      risk_score: number;
+      near_count: number;
+      high_count: number;
+      distance_km: number;
+      duration_min: number;
+    } | null;
+    routes: Array<{
+      rank: number;
+      label: string;
+      risk_level: "LOW" | "MEDIUM" | "HIGH";
+      risk_score: number;
+      near_count: number;
+      high_count: number;
+      distance_km: number;
+      duration_min: number;
+      maps_url: string;
+    }>;
+  } | null>(null);
+  const [routeSafetyLoading, setRouteSafetyLoading] = useState(false);
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [healthChecking, setHealthChecking] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -86,6 +110,14 @@ export default function SafetyMapPage() {
         setTips(res.advisory.tips);
         setCriticalAreas(res.meta.critical_areas);
         setHighAreas(res.meta.high_areas);
+        const trendRes = await getCitizenHotspotTrend({ days, issue_type: issueType });
+        setTrendData(trendRes.trend);
+        const areaRes = await getCitizenHotspotAreas({
+          days,
+          issue_type: issueType,
+          grid_size: 0.01,
+        });
+        setAreaSegments(areaRes.areas);
         setError(null);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Gagal memuat peta area rawan.";
@@ -106,104 +138,93 @@ export default function SafetyMapPage() {
     return () => {
       active = false;
     };
-  }, [days, issueType, router]);
-
-  const topHotspots = useMemo(() => hotspots.slice(0, 8), [hotspots]);
-  const routeRisk = useMemo(() => {
-    const aLat = Number.parseFloat(startLat);
-    const aLng = Number.parseFloat(startLng);
-    const bLat = Number.parseFloat(endLat);
-    const bLng = Number.parseFloat(endLng);
-
-    if (
-      Number.isNaN(aLat) ||
-      Number.isNaN(aLng) ||
-      Number.isNaN(bLat) ||
-      Number.isNaN(bLng) ||
-      hotspots.length === 0
-    ) {
-      return null;
-    }
-
-    const corridor = 0.003; // ~300m latitude band
-    const nearHotspots = hotspots.filter((h) => {
-      const d = pointToSegmentDistance(h.lat, h.lng, aLat, aLng, bLat, bLng);
-      return d <= corridor;
-    });
-
-    const score = nearHotspots.reduce((acc, h) => acc + h.risk_score, 0);
-    const criticalCount = nearHotspots.filter((h) => h.risk_level === "CRITICAL").length;
-    const highCount = nearHotspots.filter((h) => h.risk_level === "HIGH").length;
-
-    let label: "LOW" | "MEDIUM" | "HIGH";
-    if (criticalCount >= 1 || score >= 50) label = "HIGH";
-    else if (highCount >= 2 || score >= 20) label = "MEDIUM";
-    else label = "LOW";
-
-    const advice =
-      label === "HIGH"
-        ? "Rute melewati area rawan tinggi. Disarankan cari jalur alternatif."
-        : label === "MEDIUM"
-        ? "Rute cukup berisiko. Kurangi kecepatan dan waspada lubang jalan."
-        : "Rute relatif lebih aman berdasarkan data hotspot saat ini.";
-
-    return {
-      label,
-      advice,
-      nearCount: nearHotspots.length,
-      criticalCount,
-      highCount,
-      score: Number(score.toFixed(2)),
-    };
-  }, [startLat, startLng, endLat, endLng, hotspots]);
-
-  const alternativeRoutes = useMemo(() => {
-    if (!routeRisk || routeRisk.label === "LOW") return [];
-
-    const aLat = Number.parseFloat(startLat);
-    const aLng = Number.parseFloat(startLng);
-    const bLat = Number.parseFloat(endLat);
-    const bLng = Number.parseFloat(endLng);
-    if (
-      Number.isNaN(aLat) ||
-      Number.isNaN(aLng) ||
-      Number.isNaN(bLat) ||
-      Number.isNaN(bLng)
-    ) {
-      return [];
-    }
-
-    const dx = bLat - aLat;
-    const dy = bLng - aLng;
-    const length = Math.hypot(dx, dy) || 1;
-    const nx = -dy / length;
-    const ny = dx / length;
-    const midLat = (aLat + bLat) / 2;
-    const midLng = (aLng + bLng) / 2;
-    const offset = routeRisk.label === "HIGH" ? 0.01 : 0.006;
-
-    const candidates = [
-      {
-        label: "Alternatif A",
-        waypointLat: Number((midLat + nx * offset).toFixed(6)),
-        waypointLng: Number((midLng + ny * offset).toFixed(6)),
-      },
-      {
-        label: "Alternatif B",
-        waypointLat: Number((midLat - nx * offset).toFixed(6)),
-        waypointLng: Number((midLng - ny * offset).toFixed(6)),
-      },
-    ];
-
-    return candidates.map((c) => ({
-      ...c,
-      mapsUrl: toMapsDirUrl(aLat, aLng, bLat, bLng, c.waypointLat, c.waypointLng),
-    }));
-  }, [routeRisk, startLat, startLng, endLat, endLng]);
+  }, [days, issueType, router, reloadSeq]);
 
   useEffect(() => {
-    setDismissAlert(false);
-  }, [nearbyRisk?.level]);
+    if (!error) return;
+    const timer = setTimeout(() => setError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(SAVED_ROUTES_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as SavedRoute[];
+      if (Array.isArray(parsed)) {
+        setSavedRoutes(parsed.slice(0, 8));
+      }
+    } catch {
+      // no-op
+    }
+  }, []);
+
+  const topHotspots = useMemo(() => hotspots.slice(0, 8), [hotspots]);
+
+  const analyzeRouteSafety = async () => {
+    const aLat = Number.parseFloat(startLat);
+    const aLng = Number.parseFloat(startLng);
+    const bLat = Number.parseFloat(endLat);
+    const bLng = Number.parseFloat(endLng);
+    if (Number.isNaN(aLat) || Number.isNaN(aLng) || Number.isNaN(bLat) || Number.isNaN(bLng)) {
+      setLocationRiskInfo("Isi koordinat awal dan tujuan dengan benar.");
+      return;
+    }
+
+    setRouteSafetyLoading(true);
+    try {
+      const res = await getCitizenRouteSafety({
+        start_lat: aLat,
+        start_lng: aLng,
+        end_lat: bLat,
+        end_lng: bLng,
+        days,
+        issue_type: issueType,
+        corridor_km: 0.4,
+      });
+      setRouteSafety({
+        best: res.best
+          ? {
+              label: res.best.label,
+              risk_level: res.best.risk_level,
+              risk_score: res.best.risk_score,
+              near_count: res.best.near_count,
+              high_count: res.best.high_count,
+              distance_km: res.best.distance_km,
+              duration_min: res.best.duration_min,
+            }
+          : null,
+        routes: res.routes,
+      });
+      setLocationRiskInfo(
+        res.best
+          ? `Analisis rute selesai: ${res.best.label} (${res.best.risk_level})`
+          : "Analisis rute selesai."
+      );
+    } catch {
+      setLocationRiskInfo("Gagal menganalisis rute. Coba lagi.");
+      setRouteSafety(null);
+    } finally {
+      setRouteSafetyLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!nearbyRisk) return;
+    const raw = window.localStorage.getItem(ALERT_COOLDOWN_KEY);
+    let cooldownMap: Record<string, number> = {};
+    if (raw) {
+      try {
+        cooldownMap = JSON.parse(raw) as Record<string, number>;
+      } catch {
+        cooldownMap = {};
+      }
+    }
+    const now = Date.now();
+    const cooldownUntil = cooldownMap[nearbyRisk.alert.level] ?? 0;
+    const suppressedByCooldown = cooldownUntil > now;
+    setDismissAlert(!nearbyRisk.alert.should_alert || suppressedByCooldown);
+  }, [nearbyRisk]);
 
   const detectCurrentLocationRisk = () => {
     if (!navigator.geolocation) {
@@ -235,6 +256,12 @@ export default function SafetyMapPage() {
             level: res.meta.risk_level,
             score: res.meta.risk_score,
             count: res.meta.count,
+            alert: {
+              should_alert: res.meta.alert.should_alert,
+              level: res.meta.alert.level,
+              message: res.meta.alert.message,
+              cooldown_minutes: res.meta.alert.cooldown_minutes,
+            },
             items: res.items.map((i) => ({
               id: i.id,
               issue_type: i.issue_type,
@@ -261,6 +288,60 @@ export default function SafetyMapPage() {
     );
   };
 
+  const saveCurrentRoute = () => {
+    if (!startLat || !startLng || !endLat || !endLng) {
+      setLocationRiskInfo("Isi koordinat awal dan tujuan dulu sebelum menyimpan rute.");
+      return;
+    }
+    const name = routeName.trim() || `Rute ${savedRoutes.length + 1}`;
+    const newRoute: SavedRoute = {
+      id: `${Date.now()}`,
+      name,
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+    };
+    const next = [newRoute, ...savedRoutes].slice(0, 8);
+    setSavedRoutes(next);
+    window.localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(next));
+    setRouteName("");
+  };
+
+  const loadSavedRoute = (route: SavedRoute) => {
+    setStartLat(route.startLat);
+    setStartLng(route.startLng);
+    setEndLat(route.endLat);
+    setEndLng(route.endLng);
+  };
+
+  const removeSavedRoute = (id: string) => {
+    const next = savedRoutes.filter((r) => r.id !== id);
+    setSavedRoutes(next);
+    window.localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(next));
+  };
+
+  const runHealthCheck = async () => {
+    setHealthChecking(true);
+    try {
+      const res = await checkBackendHealth();
+      const checkedAt = new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      setHealthStatus({
+        ok: res.status === "ok",
+        message: `Backend reachable (status: ${res.status}) - checked at ${checkedAt}.`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to reach backend health endpoint.";
+      setHealthStatus({ ok: false, message });
+      setError(message);
+    } finally {
+      setHealthChecking(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 md:px-8 md:py-8 space-y-6">
       <section className="app-card p-5 md:p-7">
@@ -277,8 +358,36 @@ export default function SafetyMapPage() {
           >
             Laporkan Isu Baru
           </Link>
+          <button
+            onClick={runHealthCheck}
+            disabled={healthChecking}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${healthChecking ? "animate-spin" : ""}`} />
+            Check backend health
+          </button>
         </div>
       </section>
+
+      {healthStatus && (
+        <section
+          className={`rounded-2xl px-5 py-3 text-sm flex items-center justify-between gap-3 ${
+            healthStatus.ok
+              ? "border border-teal-200 bg-teal-50 text-teal-800"
+              : "border border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <p>{healthStatus.message}</p>
+          <button
+            onClick={() => setHealthStatus(null)}
+            className={`rounded-md border bg-white px-2.5 py-1 text-xs font-semibold ${
+              healthStatus.ok ? "border-teal-200 text-teal-700" : "border-amber-200 text-amber-700"
+            }`}
+          >
+            Close
+          </button>
+        </section>
+      )}
 
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="app-card p-4">
@@ -299,24 +408,97 @@ export default function SafetyMapPage() {
         </div>
       </section>
 
-      {nearbyRisk && nearbyRisk.level === "HIGH" && !dismissAlert && (
+      <section className="app-card p-5 md:p-6">
+        <h2 className="text-base font-semibold text-slate-900">Area Administratif dengan Isu Tertinggi</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Ringkasan wilayah untuk membantu warga memahami area yang perlu ekstra waspada.
+        </p>
+        {areaSegments.length === 0 ? (
+          <p className="text-xs text-slate-500 mt-3">Belum ada area yang terpetakan.</p>
+        ) : (
+          <div className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {areaSegments.slice(0, 6).map((area) => (
+              <div key={area.area_id} className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                <p className="text-xs font-semibold text-slate-800">{area.area_name}</p>
+                <p className="text-[11px] text-slate-500 mt-1">{area.city}</p>
+                <p className="text-[11px] text-slate-600 mt-1">
+                  Risk {area.risk_level} - Score {area.risk_score}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Hotspot {area.hotspot_count} - High {area.high_count}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="app-card p-5 md:p-6">
+        <h2 className="text-base font-semibold text-slate-900">Trend Area Rawan</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Memantau laporan aktif harian untuk melihat tren risiko di wilayah sekitar.
+        </p>
+        <div className="mt-4 h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={trendData}>
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#64748b" }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "#64748b" }} />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="incoming"
+                name="Open reports"
+                stroke="#0f766e"
+                strokeWidth={2}
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="high_priority"
+                name="High priority"
+                stroke="#dc2626"
+                strokeWidth={2}
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      {nearbyRisk && nearbyRisk.alert.should_alert && !dismissAlert && (
         <section className="rounded-2xl border border-red-200 bg-red-50 px-4 py-4 md:px-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-sm font-semibold text-red-700">Peringatan Risiko Tinggi di Sekitar Lokasi Anda</p>
-              <p className="text-xs text-red-600 mt-1">
-                Prioritaskan keselamatan: hindari kecepatan tinggi, jaga jarak aman, dan pertimbangkan jalur alternatif.
+              <p className="text-sm font-semibold text-red-700">
+                Peringatan Risiko {nearbyRisk.alert.level} di Sekitar Lokasi Anda
               </p>
+              <p className="text-xs text-red-600 mt-1">{nearbyRisk.alert.message}</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
               <Link
                 href="/report"
-                className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 text-center"
               >
                 Laporkan Bahaya
               </Link>
               <button
-                onClick={() => setDismissAlert(true)}
+                onClick={() => {
+                  const raw = window.localStorage.getItem(ALERT_COOLDOWN_KEY);
+                  let cooldownMap: Record<string, number> = {};
+                  if (raw) {
+                    try {
+                      cooldownMap = JSON.parse(raw) as Record<string, number>;
+                    } catch {
+                      cooldownMap = {};
+                    }
+                  }
+                  const now = Date.now();
+                  cooldownMap[nearbyRisk.alert.level] =
+                    now + nearbyRisk.alert.cooldown_minutes * 60 * 1000;
+                  window.localStorage.setItem(ALERT_COOLDOWN_KEY, JSON.stringify(cooldownMap));
+                  setDismissAlert(true);
+                }}
                 className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
               >
                 Tutup
@@ -351,7 +533,23 @@ export default function SafetyMapPage() {
             Memuat peta area rawan...
           </div>
         ) : error ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 space-y-2">
+            <p>{error}</p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setReloadSeq((prev) => prev + 1)}
+                className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => setError(null)}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         ) : hotspots.length === 0 ? (
           <div className="h-80 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center text-sm text-slate-500">
             Tidak ada data hotspot untuk filter ini.
@@ -390,15 +588,15 @@ export default function SafetyMapPage() {
         <p className="text-xs text-slate-500 mt-1">
           Masukkan titik awal dan tujuan (latitude/longitude) untuk estimasi risiko jalur.
         </p>
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
           <button
             onClick={detectCurrentLocationRisk}
             disabled={locationLoading}
-            className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 w-full sm:w-auto"
           >
             {locationLoading ? "Mendeteksi lokasi..." : "Gunakan lokasi saya"}
           </button>
-          {locationRiskInfo && <p className="text-xs text-slate-600">{locationRiskInfo}</p>}
+          {locationRiskInfo && <p className="text-xs text-slate-600 break-words">{locationRiskInfo}</p>}
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
           <input
@@ -426,10 +624,64 @@ export default function SafetyMapPage() {
             className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
           />
         </div>
+        <div className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            value={routeName}
+            onChange={(e) => setRouteName(e.target.value)}
+            placeholder="Nama rute (opsional)"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs w-full sm:w-auto"
+          />
+          <button
+            onClick={saveCurrentRoute}
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 w-full sm:w-auto"
+          >
+            Simpan Rute
+          </button>
+          <button
+            onClick={analyzeRouteSafety}
+            disabled={routeSafetyLoading}
+            className="rounded-md border border-teal-300 bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700 hover:bg-teal-100 disabled:opacity-60 w-full sm:w-auto"
+          >
+            {routeSafetyLoading ? "Menganalisis..." : "Analisis Rute AI"}
+          </button>
+        </div>
+        {savedRoutes.length > 0 && (
+          <div className="mt-3 rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+              <p className="text-sm font-semibold text-slate-800">Rute Tersimpan</p>
+            </div>
+            <div className="px-4 py-3 space-y-2">
+              {savedRoutes.map((r) => (
+                <div key={r.id} className="rounded-lg border border-slate-200 px-3 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-700">{r.name}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {r.startLat}, {r.startLng} {"->"} {r.endLat}, {r.endLng}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <button
+                      onClick={() => loadSavedRoute(r)}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 flex-1 sm:flex-none"
+                    >
+                      Pakai
+                    </button>
+                    <button
+                      onClick={() => removeSavedRoute(r.id)}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 flex-1 sm:flex-none"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-          {!routeRisk ? (
+          {!routeSafety?.best ? (
             <p className="text-xs text-slate-500">
-              Isi semua koordinat untuk melihat estimasi risiko rute.
+              Isi semua koordinat lalu klik &quot;Analisis Rute AI&quot;.
             </p>
           ) : (
             <div className="space-y-1">
@@ -437,37 +689,37 @@ export default function SafetyMapPage() {
                 Risk Level:{" "}
                 <span
                   className={
-                    routeRisk.label === "HIGH"
+                    routeSafety.best.risk_level === "HIGH"
                       ? "text-red-600"
-                      : routeRisk.label === "MEDIUM"
+                      : routeSafety.best.risk_level === "MEDIUM"
                       ? "text-amber-600"
                       : "text-teal-700"
                   }
                 >
-                  {routeRisk.label}
+                  {routeSafety.best.risk_level}
                 </span>
               </p>
-              <p className="text-xs text-slate-600">{routeRisk.advice}</p>
               <p className="text-xs text-slate-500">
-                Hotspot sekitar jalur: {routeRisk.nearCount} (Critical: {routeRisk.criticalCount}, High:{" "}
-                {routeRisk.highCount}) - Score: {routeRisk.score}
+                {routeSafety.best.label} - Score: {routeSafety.best.risk_score} - Nearby:{" "}
+                {routeSafety.best.near_count} (High: {routeSafety.best.high_count}) - Estimasi{" "}
+                {routeSafety.best.distance_km} km / {routeSafety.best.duration_min} menit
               </p>
             </div>
           )}
         </div>
-        {alternativeRoutes.length > 0 && (
+        {routeSafety && routeSafety.routes.length > 1 && (
           <div className="mt-3 rounded-xl border border-slate-200 bg-white overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-              <p className="text-sm font-semibold text-slate-800">Saran Jalur Alternatif (Eksperimental)</p>
+              <p className="text-sm font-semibold text-slate-800">Saran Jalur Alternatif (Routing Engine)</p>
             </div>
             <div className="px-4 py-3 space-y-2">
-              {alternativeRoutes.map((alt) => (
-                <div key={alt.label} className="rounded-lg border border-slate-200 px-3 py-2">
+              {routeSafety.routes.slice(1).map((alt) => (
+                <div key={`${alt.label}-${alt.rank}`} className="rounded-lg border border-slate-200 px-3 py-2">
                   <p className="text-xs font-semibold text-slate-700">
-                    {alt.label}: waypoint {alt.waypointLat}, {alt.waypointLng}
+                    {alt.label} - {alt.risk_level} - score {alt.risk_score} - {alt.distance_km} km
                   </p>
                   <a
-                    href={alt.mapsUrl}
+                    href={alt.maps_url}
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs font-semibold text-teal-700 hover:underline"

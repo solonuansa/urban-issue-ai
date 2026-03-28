@@ -124,6 +124,23 @@ export interface NotificationListResponse {
   };
 }
 
+export interface SavedDashboardViewPayload {
+  priority: "ALL" | "HIGH" | "MEDIUM" | "LOW";
+  status: "ALL" | "NEW" | "IN_REVIEW" | "IN_PROGRESS" | "RESOLVED" | "REJECTED";
+  search: string;
+  hotspot_days: number;
+  hotspot_mode: "OPEN" | "ALL" | "HIGH";
+  hotspot_risk: "ALL" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+}
+
+export interface SavedDashboardView {
+  id: number;
+  name: string;
+  payload: SavedDashboardViewPayload;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SlaHighItem extends ReportData {
   age_hours: number;
   sla_due_at: string;
@@ -160,10 +177,40 @@ export interface HotspotRiskPolicy {
   };
 }
 
+export interface HotspotAreaSegment {
+  area_id: string;
+  area_name: string;
+  city: string;
+  hotspot_count: number;
+  report_count: number;
+  high_count: number;
+  open_count: number;
+  risk_score: number;
+  risk_level: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+}
+
 type ApiErrorPayload = {
   detail?: string;
   message?: string;
 };
+
+function formatNetworkErrorMessage(): string {
+  return `Tidak bisa terhubung ke server API (${BASE_URL}). Pastikan backend berjalan dan NEXT_PUBLIC_API_URL sudah benar.`;
+}
+
+async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Permintaan ke server dibatalkan karena timeout.");
+    }
+    if (error instanceof TypeError) {
+      throw new Error(formatNetworkErrorMessage());
+    }
+    throw error instanceof Error ? error : new Error("Gagal menghubungi server.");
+  }
+}
 
 async function parseApiError(res: Response): Promise<never> {
   let payload: ApiErrorPayload | null = null;
@@ -192,6 +239,12 @@ export function getPublicImageUrl(imageUrl?: string): string | undefined {
   return `${BASE_URL}${imageUrl}`;
 }
 
+export async function checkBackendHealth(): Promise<{ status: string }> {
+  const res = await apiFetch(`${BASE_URL}/healthz`);
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { status: string };
+}
+
 export async function register(payload: {
   full_name: string;
   email: string;
@@ -204,7 +257,7 @@ export async function register(payload: {
   form.append("password", payload.password);
   form.append("role", payload.role ?? "citizen");
 
-  const res = await fetch(`${BASE_URL}/api/auth/register`, { method: "POST", body: form });
+  const res = await apiFetch(`${BASE_URL}/api/auth/register`, { method: "POST", body: form });
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as { message: string; user: AuthUser & { created_at: string } };
 }
@@ -214,13 +267,13 @@ export async function login(payload: { email: string; password: string }): Promi
   form.append("email", payload.email);
   form.append("password", payload.password);
 
-  const res = await fetch(`${BASE_URL}/api/auth/login`, { method: "POST", body: form });
+  const res = await apiFetch(`${BASE_URL}/api/auth/login`, { method: "POST", body: form });
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as AuthResponse;
 }
 
 export async function getMe(): Promise<MeResponse> {
-  const res = await fetch(`${BASE_URL}/api/auth/me`, {
+  const res = await apiFetch(`${BASE_URL}/api/auth/me`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -234,7 +287,7 @@ export async function submitReport(payload: SubmitReportPayload): Promise<Submit
   form.append("longitude", String(payload.longitude));
   form.append("location_importance", String(payload.location_importance));
 
-  const res = await fetch(`${BASE_URL}/api/reports/submit`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/submit`, {
     method: "POST",
     body: form,
     headers: withAuth(),
@@ -259,7 +312,7 @@ export async function getReports(filters?: {
   if (filters?.page_size) params.set("page_size", String(filters.page_size));
   const suffix = params.toString() ? `?${params.toString()}` : "";
 
-  const res = await fetch(`${BASE_URL}/api/reports/${suffix}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/${suffix}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -267,7 +320,7 @@ export async function getReports(filters?: {
 }
 
 export async function getReport(id: number): Promise<GetReportResponse> {
-  const res = await fetch(`${BASE_URL}/api/reports/${id}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/${id}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -285,7 +338,7 @@ export async function updateReportStatus(payload: {
   if (payload.resolution_note) form.append("resolution_note", payload.resolution_note);
   if (payload.assigned_to_user_id) form.append("assigned_to_user_id", String(payload.assigned_to_user_id));
 
-  const res = await fetch(`${BASE_URL}/api/reports/${payload.reportId}/status`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/${payload.reportId}/status`, {
     method: "PATCH",
     body: form,
     headers: withAuth(),
@@ -295,7 +348,7 @@ export async function updateReportStatus(payload: {
 }
 
 export async function getOperators(): Promise<{ operators: OperatorUser[] }> {
-  const res = await fetch(`${BASE_URL}/api/reports/operators`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/operators`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -311,7 +364,7 @@ export async function assignReportOperator(payload: {
   form.append("assigned_to_user_id", String(payload.assigned_to_user_id));
   if (payload.note) form.append("note", payload.note);
 
-  const res = await fetch(`${BASE_URL}/api/reports/${payload.reportId}/assign`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/${payload.reportId}/assign`, {
     method: "PATCH",
     headers: withAuth(),
     body: form,
@@ -321,7 +374,7 @@ export async function assignReportOperator(payload: {
 }
 
 export async function getReportAuditLogs(reportId: number): Promise<{ logs: ReportAuditLog[] }> {
-  const res = await fetch(`${BASE_URL}/api/reports/${reportId}/audit`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/${reportId}/audit`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -329,7 +382,7 @@ export async function getReportAuditLogs(reportId: number): Promise<{ logs: Repo
 }
 
 export async function getReportMetrics(): Promise<ReportMetricsResponse> {
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/summary`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/summary`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -337,7 +390,7 @@ export async function getReportMetrics(): Promise<ReportMetricsResponse> {
 }
 
 export async function exportReportMetricsCsv(): Promise<Blob> {
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/export.csv`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/export.csv`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -345,7 +398,7 @@ export async function exportReportMetricsCsv(): Promise<Blob> {
 }
 
 export async function getSlaHighBoard(): Promise<{ items: SlaHighItem[] }> {
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/sla/high`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/sla/high`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -374,7 +427,7 @@ export async function getHotspots(params?: {
   if (params?.grid_size) query.set("grid_size", String(params.grid_size));
   const suffix = query.toString() ? `?${query.toString()}` : "";
 
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots${suffix}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/hotspots${suffix}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -391,7 +444,7 @@ export async function getHotspots(params?: {
 }
 
 export async function getHotspotRiskPolicy(): Promise<{ policy: HotspotRiskPolicy }> {
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -410,7 +463,7 @@ export async function updateHotspotRiskPolicy(payload: {
   critical_count_min: number;
   critical_high_count_min: number;
 }): Promise<{ message: string; policy: HotspotRiskPolicy }> {
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/hotspots/policy`, {
     method: "PATCH",
     headers: {
       ...withAuth(),
@@ -449,13 +502,49 @@ export async function getHotspotReports(params: {
   if (params.grid_size) query.set("grid_size", String(params.grid_size));
   if (params.limit) query.set("limit", String(params.limit));
 
-  const res = await fetch(`${BASE_URL}/api/reports/metrics/hotspots/reports?${query.toString()}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/hotspots/reports?${query.toString()}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
   return (await res.json()) as {
     reports: ReportData[];
     meta: { lat: number; lng: number; grid_size: number; days: number; count: number };
+  };
+}
+
+export async function getHotspotAreaSegments(params?: {
+  days?: number;
+  status?: "OPEN" | ReportStatus;
+  priority?: PriorityLabel;
+  grid_size?: number;
+}): Promise<{
+  areas: HotspotAreaSegment[];
+  meta: {
+    days: number;
+    grid_size: number;
+    total_areas: number;
+    risk_policy?: HotspotRiskPolicy;
+  };
+}> {
+  const query = new URLSearchParams();
+  if (params?.days) query.set("days", String(params.days));
+  if (params?.status) query.set("status", params.status);
+  if (params?.priority) query.set("priority", params.priority);
+  if (params?.grid_size) query.set("grid_size", String(params.grid_size));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  const res = await apiFetch(`${BASE_URL}/api/reports/metrics/hotspots/areas${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    areas: HotspotAreaSegment[];
+    meta: {
+      days: number;
+      grid_size: number;
+      total_areas: number;
+      risk_policy?: HotspotRiskPolicy;
+    };
   };
 }
 
@@ -485,7 +574,7 @@ export async function getCitizenHotspots(params?: {
   if (params?.grid_size) query.set("grid_size", String(params.grid_size));
   const suffix = query.toString() ? `?${query.toString()}` : "";
 
-  const res = await fetch(`${BASE_URL}/api/reports/public/hotspots${suffix}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/public/hotspots${suffix}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -524,6 +613,23 @@ export async function getCitizenNearbyRisk(params: {
     count: number;
     risk_level: "LOW" | "MEDIUM" | "HIGH";
     risk_score: number;
+    alert: {
+      should_alert: boolean;
+      level: "LOW" | "MEDIUM" | "HIGH";
+      message: string;
+      cooldown_minutes: number;
+      near_high_priority: number;
+      reasons: string[];
+    };
+    alert_policy: {
+      medium_score_min: number;
+      high_score_min: number;
+      medium_count_min: number;
+      high_count_min: number;
+      high_priority_near_min: number;
+      cooldown_medium_min: number;
+      cooldown_high_min: number;
+    };
   };
   items: Array<{
     id: number;
@@ -544,7 +650,7 @@ export async function getCitizenNearbyRisk(params: {
   if (params.issue_type) query.set("issue_type", params.issue_type);
   if (params.limit) query.set("limit", String(params.limit));
 
-  const res = await fetch(`${BASE_URL}/api/reports/public/nearby-risk?${query.toString()}`, {
+  const res = await apiFetch(`${BASE_URL}/api/reports/public/nearby-risk?${query.toString()}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -558,6 +664,23 @@ export async function getCitizenNearbyRisk(params: {
       count: number;
       risk_level: "LOW" | "MEDIUM" | "HIGH";
       risk_score: number;
+      alert: {
+        should_alert: boolean;
+        level: "LOW" | "MEDIUM" | "HIGH";
+        message: string;
+        cooldown_minutes: number;
+        near_high_priority: number;
+        reasons: string[];
+      };
+      alert_policy: {
+        medium_score_min: number;
+        high_score_min: number;
+        medium_count_min: number;
+        high_count_min: number;
+        high_priority_near_min: number;
+        cooldown_medium_min: number;
+        cooldown_high_min: number;
+      };
     };
     items: Array<{
       id: number;
@@ -568,6 +691,149 @@ export async function getCitizenNearbyRisk(params: {
       longitude: number;
       distance_km: number;
       risk_score: number;
+    }>;
+  };
+}
+
+export async function getCitizenHotspotTrend(params?: {
+  days?: number;
+  issue_type?: "pothole" | "all";
+}): Promise<{
+  meta: { days: number; issue_type: string };
+  trend: Array<{ date: string; incoming: number; high_priority: number }>;
+}> {
+  const query = new URLSearchParams();
+  if (params?.days) query.set("days", String(params.days));
+  if (params?.issue_type) query.set("issue_type", params.issue_type);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  const res = await apiFetch(`${BASE_URL}/api/reports/public/hotspots/trend${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    meta: { days: number; issue_type: string };
+    trend: Array<{ date: string; incoming: number; high_priority: number }>;
+  };
+}
+
+export async function getCitizenHotspotAreas(params?: {
+  days?: number;
+  issue_type?: "pothole" | "all";
+  grid_size?: number;
+}): Promise<{
+  areas: HotspotAreaSegment[];
+  meta: {
+    days: number;
+    issue_type: string;
+    grid_size: number;
+    total_areas: number;
+    risk_policy?: HotspotRiskPolicy;
+  };
+}> {
+  const query = new URLSearchParams();
+  if (params?.days) query.set("days", String(params.days));
+  if (params?.issue_type) query.set("issue_type", params.issue_type);
+  if (params?.grid_size) query.set("grid_size", String(params.grid_size));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const res = await apiFetch(`${BASE_URL}/api/reports/public/hotspots/areas${suffix}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    areas: HotspotAreaSegment[];
+    meta: {
+      days: number;
+      issue_type: string;
+      grid_size: number;
+      total_areas: number;
+      risk_policy?: HotspotRiskPolicy;
+    };
+  };
+}
+
+export async function getCitizenRouteSafety(params: {
+  start_lat: number;
+  start_lng: number;
+  end_lat: number;
+  end_lng: number;
+  days?: number;
+  issue_type?: "pothole" | "all";
+  corridor_km?: number;
+}): Promise<{
+  meta: {
+    days: number;
+    issue_type: string;
+    corridor_km: number;
+    candidate_count: number;
+  };
+  best: {
+    rank: number;
+    label: string;
+    source: string;
+    distance_km: number;
+    duration_min: number;
+    risk_level: "LOW" | "MEDIUM" | "HIGH";
+    risk_score: number;
+    near_count: number;
+    high_count: number;
+    maps_url: string;
+  } | null;
+  routes: Array<{
+    rank: number;
+    label: string;
+    source: string;
+    distance_km: number;
+    duration_min: number;
+    risk_level: "LOW" | "MEDIUM" | "HIGH";
+    risk_score: number;
+    near_count: number;
+    high_count: number;
+    maps_url: string;
+  }>;
+}> {
+  const query = new URLSearchParams();
+  query.set("start_lat", String(params.start_lat));
+  query.set("start_lng", String(params.start_lng));
+  query.set("end_lat", String(params.end_lat));
+  query.set("end_lng", String(params.end_lng));
+  if (params.days) query.set("days", String(params.days));
+  if (params.issue_type) query.set("issue_type", params.issue_type);
+  if (params.corridor_km) query.set("corridor_km", String(params.corridor_km));
+  const res = await apiFetch(`${BASE_URL}/api/reports/public/route-safety?${query.toString()}`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as {
+    meta: {
+      days: number;
+      issue_type: string;
+      corridor_km: number;
+      candidate_count: number;
+    };
+    best: {
+      rank: number;
+      label: string;
+      source: string;
+      distance_km: number;
+      duration_min: number;
+      risk_level: "LOW" | "MEDIUM" | "HIGH";
+      risk_score: number;
+      near_count: number;
+      high_count: number;
+      maps_url: string;
+    } | null;
+    routes: Array<{
+      rank: number;
+      label: string;
+      source: string;
+      distance_km: number;
+      duration_min: number;
+      risk_level: "LOW" | "MEDIUM" | "HIGH";
+      risk_score: number;
+      near_count: number;
+      high_count: number;
+      maps_url: string;
     }>;
   };
 }
@@ -584,7 +850,7 @@ export async function getNotifications(params?: {
   if (params?.page_size) query.set("page_size", String(params.page_size));
   if (params?.type) query.set("type", params.type);
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  const res = await fetch(`${BASE_URL}/api/notifications/${suffix}`, {
+  const res = await apiFetch(`${BASE_URL}/api/notifications/${suffix}`, {
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);
@@ -592,7 +858,7 @@ export async function getNotifications(params?: {
 }
 
 export async function markNotificationRead(notificationId: number): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/notifications/${notificationId}/read`, {
+  const res = await apiFetch(`${BASE_URL}/api/notifications/${notificationId}/read`, {
     method: "PATCH",
     headers: withAuth(),
   });
@@ -600,8 +866,40 @@ export async function markNotificationRead(notificationId: number): Promise<void
 }
 
 export async function markAllNotificationsRead(): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/notifications/read-all`, {
+  const res = await apiFetch(`${BASE_URL}/api/notifications/read-all`, {
     method: "PATCH",
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+}
+
+export async function getSavedDashboardViews(): Promise<{ views: SavedDashboardView[] }> {
+  const res = await apiFetch(`${BASE_URL}/api/dashboard-views/`, {
+    headers: withAuth(),
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { views: SavedDashboardView[] };
+}
+
+export async function createSavedDashboardView(payload: {
+  name: string;
+  config: SavedDashboardViewPayload;
+}): Promise<{ message: string; view: SavedDashboardView }> {
+  const form = new FormData();
+  form.append("name", payload.name);
+  form.append("payload_json", JSON.stringify(payload.config));
+  const res = await apiFetch(`${BASE_URL}/api/dashboard-views/`, {
+    method: "POST",
+    headers: withAuth(),
+    body: form,
+  });
+  if (!res.ok) await parseApiError(res);
+  return (await res.json()) as { message: string; view: SavedDashboardView };
+}
+
+export async function deleteSavedDashboardView(viewId: number): Promise<void> {
+  const res = await apiFetch(`${BASE_URL}/api/dashboard-views/${viewId}`, {
+    method: "DELETE",
     headers: withAuth(),
   });
   if (!res.ok) await parseApiError(res);

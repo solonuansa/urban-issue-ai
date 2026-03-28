@@ -26,9 +26,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className={`${manrope.variable} ${jetbrainsMono.variable} app-shell antialiased`}
         style={{ fontFamily: "var(--font-manrope)" }}
       >
-        <div className="flex min-h-screen">
+        <div className="min-h-screen md:pl-72">
           <Sidebar />
-          <main className="flex-1 min-w-0 pb-20 md:pb-0">
+          <main className="min-w-0 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0">
             <TopAuthActions />
             {children}
           </main>

@@ -39,9 +39,9 @@ export default function TopAuthActions() {
   }
 
   return (
-    <div className="px-4 pt-4 md:px-8 md:pt-6 flex justify-end">
+    <div className="sticky top-0 z-20 px-3 pt-2 md:px-8 md:pt-4 flex justify-end pointer-events-none">
       {user ? (
-        <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
+        <div className="pointer-events-auto inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 backdrop-blur px-2 py-1.5 shadow-sm">
           <p className="hidden md:block text-[11px] text-slate-500">
             {user.full_name}
           </p>
@@ -50,13 +50,13 @@ export default function TopAuthActions() {
             className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
           >
             <LogOut className="w-3.5 h-3.5" />
-            Logout
+            <span className="hidden sm:inline">Logout</span>
           </button>
         </div>
       ) : (
         <Link
           href="/login"
-          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+          className="pointer-events-auto inline-flex items-center rounded-md border border-slate-300 bg-white/95 backdrop-blur px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 shadow-sm"
         >
           Sign In
         </Link>

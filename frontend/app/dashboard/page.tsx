@@ -22,6 +22,11 @@ import PriorityBadge from "@/components/PriorityBadge";
 import HotspotMap from "@/components/HotspotMap";
 import { clearAuthSession, getAuthUser, type AuthUser } from "@/lib/auth";
 import {
+  createSavedDashboardView,
+  deleteSavedDashboardView,
+  checkBackendHealth,
+  getHotspotAreaSegments,
+  getSavedDashboardViews,
   getHotspotReports,
   getHotspotRiskPolicy,
   getHotspots,
@@ -39,8 +44,10 @@ import {
   type ReportMetricsResponse,
   type ReportStatus,
   type HotspotItem,
+  type HotspotAreaSegment,
   type OperatorUser,
   type ReportAuditLog,
+  type SavedDashboardView,
 } from "@/services/api";
 
 const PRIORITY_COLORS = { HIGH: "#ef4444", MEDIUM: "#f59e0b", LOW: "#14b8a6" };
@@ -100,10 +107,12 @@ export default function DashboardPage() {
   const [reports, setReports] = useState<Report[]>([]);
   const [metrics, setMetrics] = useState<ReportMetricsResponse | null>(null);
   const [hotspots, setHotspots] = useState<HotspotItem[]>([]);
+  const [hotspotAreas, setHotspotAreas] = useState<HotspotAreaSegment[]>([]);
   const [operators, setOperators] = useState<OperatorUser[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<ReportStatus | "ALL">("ALL");
   const [search, setSearch] = useState("");
+  const [draftSearch, setDraftSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
@@ -141,11 +150,37 @@ export default function DashboardPage() {
     critical_high_count_min: 3,
   });
   const [policySaving, setPolicySaving] = useState(false);
+  const [savedViews, setSavedViews] = useState<SavedDashboardView[]>([]);
+  const [viewName, setViewName] = useState("");
+  const [viewSaving, setViewSaving] = useState(false);
+  const [viewDeletingId, setViewDeletingId] = useState<number | null>(null);
+  const [healthChecking, setHealthChecking] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const fetchData = useCallback(
-    async (isRefresh = false) => {
+    async (
+      isRefresh = false,
+      override?: {
+        priorityFilter?: string;
+        statusFilter?: ReportStatus | "ALL";
+        search?: string;
+        page?: number;
+        hotspotDays?: number;
+        hotspotMode?: "OPEN" | "ALL" | "HIGH";
+      }
+    ) => {
       if (isRefresh) setRefreshing(true);
       try {
+        const effectivePriority = override?.priorityFilter ?? priorityFilter;
+        const effectiveStatus = override?.statusFilter ?? statusFilter;
+        const effectiveSearch = override?.search ?? search;
+        const effectivePage = override?.page ?? page;
+        const effectiveHotspotDays = override?.hotspotDays ?? hotspotDays;
+        const effectiveHotspotMode = override?.hotspotMode ?? hotspotMode;
+
         const userRes = await getMe();
         setMe(userRes.user);
 
@@ -156,29 +191,38 @@ export default function DashboardPage() {
           return;
         }
 
-        const [reportRes, metricRes, operatorRes, hotspotRes, policyRes] = await Promise.all([
+        const [reportRes, metricRes, operatorRes, hotspotRes, policyRes, savedViewRes, hotspotAreaRes] = await Promise.all([
           getReports({
-            priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
-            status: statusFilter,
-            search,
-            page,
+            priority: effectivePriority as "ALL" | "HIGH" | "MEDIUM" | "LOW",
+            status: effectiveStatus,
+            search: effectiveSearch,
+            page: effectivePage,
             page_size: pageSize,
           }),
           getReportMetrics(),
           getOperators(),
           getHotspots({
-            days: hotspotDays,
-            status: hotspotMode === "ALL" ? undefined : "OPEN",
-            priority: hotspotMode === "HIGH" ? "HIGH" : undefined,
+            days: effectiveHotspotDays,
+            status: effectiveHotspotMode === "ALL" ? undefined : "OPEN",
+            priority: effectiveHotspotMode === "HIGH" ? "HIGH" : undefined,
             grid_size: 0.01,
           }),
           getHotspotRiskPolicy(),
+          getSavedDashboardViews(),
+          getHotspotAreaSegments({
+            days: effectiveHotspotDays,
+            status: effectiveHotspotMode === "ALL" ? undefined : "OPEN",
+            priority: effectiveHotspotMode === "HIGH" ? "HIGH" : undefined,
+            grid_size: 0.01,
+          }),
         ]);
         setReports(reportRes.reports);
         setTotalPages(reportRes.meta?.total_pages ?? 1);
         setTotalRows(reportRes.meta?.total ?? reportRes.reports.length);
         setMetrics(metricRes);
         setHotspots(hotspotRes.hotspots);
+        setHotspotAreas(hotspotAreaRes.areas);
+        setSavedViews(savedViewRes.views);
         setHotspotPolicy(policyRes.policy);
         setPolicyForm({
           weight_total: policyRes.policy.weights.total,
@@ -238,6 +282,18 @@ export default function DashboardPage() {
     }, 60000);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  useEffect(() => {
+    setDraftSearch(search);
+  }, [search]);
+
+  useEffect(() => {
+    if (!error) return;
+    const nonDismissable = error.toLowerCase().includes("access required");
+    if (nonDismissable) return;
+    const timer = setTimeout(() => setError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   const counts = useMemo(() => {
     const fallback = {
@@ -345,6 +401,99 @@ export default function DashboardPage() {
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to export CSV.";
       setError(message);
+    }
+  };
+
+  const runHealthCheck = async () => {
+    setHealthChecking(true);
+    try {
+      const res = await checkBackendHealth();
+      const checkedAt = new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      setHealthStatus({
+        ok: res.status === "ok",
+        message: `Backend reachable (status: ${res.status}) - checked at ${checkedAt}.`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to reach backend health endpoint.";
+      setHealthStatus({ ok: false, message });
+      setError(message);
+    } finally {
+      setHealthChecking(false);
+    }
+  };
+
+  const saveCurrentView = async () => {
+    const name = viewName.trim();
+    if (!name) {
+      setError("Masukkan nama view sebelum menyimpan.");
+      return;
+    }
+    setViewSaving(true);
+    try {
+      await createSavedDashboardView({
+        name,
+        config: {
+          priority: priorityFilter as "ALL" | "HIGH" | "MEDIUM" | "LOW",
+          status: statusFilter,
+          search,
+          hotspot_days: hotspotDays,
+          hotspot_mode: hotspotMode,
+          hotspot_risk: hotspotRiskFilter,
+        },
+      });
+      setViewName("");
+      await fetchData(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to save dashboard view.";
+      setError(message);
+    } finally {
+      setViewSaving(false);
+    }
+  };
+
+  const applyMainFilters = () => {
+    const normalizedSearch = draftSearch.trim();
+    setSearch(normalizedSearch);
+    setPage(1);
+    fetchData(true, {
+      search: normalizedSearch,
+      page: 1,
+    });
+  };
+
+  const applySavedView = async (view: SavedDashboardView) => {
+    const config = view.payload;
+    setPriorityFilter(config.priority);
+    setStatusFilter(config.status);
+    setSearch(config.search ?? "");
+    setDraftSearch(config.search ?? "");
+    setHotspotDays(config.hotspot_days);
+    setHotspotMode(config.hotspot_mode);
+    setHotspotRiskFilter(config.hotspot_risk);
+    setPage(1);
+    await fetchData(true, {
+      priorityFilter: config.priority,
+      statusFilter: config.status,
+      search: config.search ?? "",
+      page: 1,
+      hotspotDays: config.hotspot_days,
+      hotspotMode: config.hotspot_mode,
+    });
+  };
+
+  const removeSavedView = async (viewId: number) => {
+    setViewDeletingId(viewId);
+    try {
+      await deleteSavedDashboardView(viewId);
+      await fetchData(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to delete saved view.";
+      setError(message);
+    } finally {
+      setViewDeletingId(null);
     }
   };
 
@@ -467,28 +616,36 @@ export default function DashboardPage() {
             )}
             {me && <p className="text-xs text-slate-500 mt-2">Signed in as {me.full_name} ({me.role})</p>}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
             <button
               onClick={() => fetchData(true)}
               disabled={refreshing}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white/50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:shadow-sm transition-all disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white/50 px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 hover:shadow-sm transition-all disabled:opacity-60"
             >
               <RotateCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
               Refresh
             </button>
             <Link
               href="/report"
-              className="inline-flex items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 hover:shadow-md transition-all active:scale-95"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-3 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-teal-800 hover:shadow-md transition-all active:scale-95"
             >
               <Plus className="w-4 h-4" />
               New Report
             </Link>
             <button
               onClick={exportCsv}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs sm:text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
               <Download className="w-4 h-4" />
               Export CSV
+            </button>
+            <button
+              onClick={runHealthCheck}
+              disabled={healthChecking}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs sm:text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              <RotateCw className={`w-4 h-4 ${healthChecking ? "animate-spin" : ""}`} />
+              Check backend health
             </button>
           </div>
         </div>
@@ -497,11 +654,40 @@ export default function DashboardPage() {
       {error && (
         <motion.section variants={itemVariants} className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p>{error}</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => fetchData(true)}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        </motion.section>
+      )}
+
+      {healthStatus && (
+        <motion.section
+          variants={itemVariants}
+          className={`rounded-2xl px-5 py-3 text-sm flex items-center justify-between gap-3 ${
+            healthStatus.ok
+              ? "border border-teal-200 bg-teal-50 text-teal-800"
+              : "border border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <p>{healthStatus.message}</p>
           <button
-            onClick={() => fetchData(true)}
-            className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            onClick={() => setHealthStatus(null)}
+            className={`rounded-md border bg-white px-2.5 py-1 text-xs font-semibold ${
+              healthStatus.ok ? "border-teal-200 text-teal-700" : "border-amber-200 text-amber-700"
+            }`}
           >
-            Retry
+            Close
           </button>
         </motion.section>
       )}
@@ -740,6 +926,46 @@ export default function DashboardPage() {
             <p className="text-lg font-bold text-teal-700">{hotspotRiskSummary.LOW}</p>
           </div>
         </div>
+        <div className="mb-4 rounded-xl border border-slate-200 bg-white overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+            <p className="text-sm font-semibold text-slate-800">Administrative Area Risk (Demo Segmentation)</p>
+          </div>
+          {hotspotAreas.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-slate-500">
+              Belum ada area administratif yang terpetakan dari hotspot saat ini.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    {["Area", "City", "Risk", "Score", "Hotspots", "Reports", "High"].map((h) => (
+                      <th
+                        key={h}
+                        className="px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider text-slate-400"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {hotspotAreas.slice(0, 8).map((area) => (
+                    <tr key={area.area_id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-3 py-2 font-semibold text-slate-700">{area.area_name}</td>
+                      <td className="px-3 py-2 text-slate-500">{area.city}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-600">{area.risk_level}</td>
+                      <td className="px-3 py-2 text-slate-600">{area.risk_score}</td>
+                      <td className="px-3 py-2 text-slate-600">{area.hotspot_count}</td>
+                      <td className="px-3 py-2 text-slate-600">{area.report_count}</td>
+                      <td className="px-3 py-2 text-slate-600">{area.high_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
         {filteredHotspots.length === 0 ? (
           <div className="h-80 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center text-sm text-slate-500">
             No hotspot data for selected filters and risk level.
@@ -841,12 +1067,51 @@ export default function DashboardPage() {
 
       <motion.section variants={itemVariants} className="app-card overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200/60 bg-slate-50/50 flex flex-col gap-3">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">Saved Views</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={viewName}
+                onChange={(e) => setViewName(e.target.value)}
+                placeholder="Nama preset view"
+                className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+              />
+              <button
+                onClick={saveCurrentView}
+                disabled={viewSaving}
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {viewSaving ? "Saving..." : "Save View"}
+              </button>
+            </div>
+            {savedViews.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {savedViews.map((view) => (
+                  <div key={view.id} className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1">
+                    <button
+                      onClick={() => applySavedView(view)}
+                      className="text-[11px] font-semibold text-slate-700 hover:text-teal-700"
+                    >
+                      {view.name}
+                    </button>
+                    <button
+                      onClick={() => removeSavedView(view.id)}
+                      disabled={viewDeletingId === view.id}
+                      className="text-[11px] font-semibold text-slate-500 hover:text-rose-600 disabled:opacity-40"
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
             {["ALL", "HIGH", "MEDIUM", "LOW"].map((p) => (
               <button
                 key={p}
                 onClick={() => setPriorityFilter(p)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
                   priorityFilter === p
                     ? "bg-teal-700 text-white shadow-md shadow-teal-700/20"
                     : "bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700"
@@ -856,12 +1121,12 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
             {STATUS_OPTIONS.map((s) => (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-200 ${
                   statusFilter === s
                     ? "bg-slate-800 text-white"
                     : "bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700"
@@ -871,24 +1136,126 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          <button
-            onClick={() => {
-              setPage(1);
-              fetchData(true);
-            }}
-            className="self-start rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            Apply Filter
-          </button>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search issue, status, severity, ID"
-            className="app-input w-full md:max-w-md"
-          />
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
+            <input
+              value={draftSearch}
+              onChange={(e) => setDraftSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  applyMainFilters();
+                }
+              }}
+              placeholder="Search issue, status, severity, ID"
+              className="app-input w-full"
+            />
+            <button
+              onClick={applyMainFilters}
+              className="w-full md:w-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Apply Filter
+            </button>
+            <button
+              onClick={() => {
+                setDraftSearch("");
+                setSearch("");
+                setPage(1);
+                fetchData(true, { search: "", page: 1 });
+              }}
+              className="w-full md:w-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+            >
+              Clear Search
+            </button>
+          </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="md:hidden px-4 py-4 space-y-3">
+          {loading ? (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
+              Loading reports...
+            </div>
+          ) : reports.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
+              No reports found.
+            </div>
+          ) : (
+            reports.map((r) => (
+              <div key={`m-${r.id}`} className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-700">#{r.id} - {r.issue_type}</p>
+                    <p className="text-[11px] text-slate-500 capitalize">
+                      {r.severity_level} - score {r.urgency_score}
+                    </p>
+                  </div>
+                  <PriorityBadge priority={r.priority_label} />
+                </div>
+                <div className="text-[11px] text-slate-600">
+                  <p>Status: <span className="font-semibold">{r.status}</span></p>
+                  <p>
+                    Date:{" "}
+                    {new Date(r.created_at).toLocaleDateString("en-GB", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={assigneeByReport[r.id] ?? ""}
+                    onChange={(e) =>
+                      setAssigneeByReport((prev) => ({
+                        ...prev,
+                        [r.id]: e.target.value ? Number(e.target.value) : null,
+                      }))
+                    }
+                    className="flex-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                  >
+                    <option value="">Unassigned</option>
+                    {operators.map((op) => (
+                      <option key={op.id} value={op.id}>
+                        {op.full_name} ({op.role})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => assignOperator(r)}
+                    disabled={pendingAssignId === r.id}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    Assign
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {transitionMap[r.status].length === 0 ? (
+                    <span className="text-[11px] text-slate-400">Final</span>
+                  ) : (
+                    transitionMap[r.status].map((nextStatus) => (
+                      <button
+                        key={`m-${r.id}-${nextStatus}`}
+                        disabled={pendingStatusId === r.id}
+                        onClick={() => updateStatus(r, nextStatus)}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-50"
+                      >
+                        {nextStatus}
+                      </button>
+                    ))
+                  )}
+                  <button
+                    onClick={() => openAudit(r.id)}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 inline-flex items-center gap-1"
+                  >
+                    <ClipboardList className="w-3 h-3" />
+                    Audit
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200/80">
@@ -1019,28 +1386,57 @@ export default function DashboardPage() {
           ) : auditLogs.length === 0 ? (
             <p className="text-sm text-slate-500">No audit logs.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200">
-                    {["Time", "Prev", "New", "Changed By", "Assigned", "Note"].map((h) => (
-                      <th key={h} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditLogs.map((log) => (
-                    <tr key={log.id} className="border-b border-slate-100">
-                      <td className="px-3 py-2 text-xs text-slate-600">{new Date(log.created_at).toLocaleString("en-GB")}</td>
-                      <td className="px-3 py-2 text-xs">{log.previous_status ?? "-"}</td>
-                      <td className="px-3 py-2 text-xs">{log.new_status ?? "-"}</td>
-                      <td className="px-3 py-2 text-xs">#{log.changed_by_user_id}</td>
-                      <td className="px-3 py-2 text-xs">{log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}</td>
-                      <td className="px-3 py-2 text-xs text-slate-600">{log.note ?? "-"}</td>
+            <div className="space-y-2">
+              <div className="md:hidden space-y-2">
+                {auditLogs.map((log) => (
+                  <article key={log.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      {new Date(log.created_at).toLocaleString("en-GB")}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <p className="text-slate-500">
+                        Prev: <span className="font-medium text-slate-700">{log.previous_status ?? "-"}</span>
+                      </p>
+                      <p className="text-slate-500">
+                        New: <span className="font-medium text-slate-700">{log.new_status ?? "-"}</span>
+                      </p>
+                      <p className="text-slate-500">
+                        By: <span className="font-medium text-slate-700">#{log.changed_by_user_id}</span>
+                      </p>
+                      <p className="text-slate-500">
+                        Assigned:{" "}
+                        <span className="font-medium text-slate-700">
+                          {log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}
+                        </span>
+                      </p>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-600">Note: {log.note ?? "-"}</p>
+                  </article>
+                ))}
+              </div>
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200">
+                      {["Time", "Prev", "New", "Changed By", "Assigned", "Note"].map((h) => (
+                        <th key={h} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">{h}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((log) => (
+                      <tr key={log.id} className="border-b border-slate-100">
+                        <td className="px-3 py-2 text-xs text-slate-600">{new Date(log.created_at).toLocaleString("en-GB")}</td>
+                        <td className="px-3 py-2 text-xs">{log.previous_status ?? "-"}</td>
+                        <td className="px-3 py-2 text-xs">{log.new_status ?? "-"}</td>
+                        <td className="px-3 py-2 text-xs">#{log.changed_by_user_id}</td>
+                        <td className="px-3 py-2 text-xs">{log.assigned_to_user_id ? `#${log.assigned_to_user_id}` : "-"}</td>
+                        <td className="px-3 py-2 text-xs text-slate-600">{log.note ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </motion.section>

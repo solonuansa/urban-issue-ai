@@ -101,7 +101,7 @@ export default function Sidebar() {
 
   return (
     <>
-      <aside className="hidden md:flex w-72 shrink-0 border-r border-slate-800 bg-slate-900 text-slate-200 min-h-screen sticky top-0 flex-col transition-all duration-300">
+      <aside className="hidden md:flex fixed inset-y-0 left-0 z-30 w-72 border-r border-slate-800 bg-slate-900 text-slate-200 h-screen flex-col overflow-y-auto transition-all duration-300">
         <div className="px-6 py-8 border-b border-slate-800">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-teal-500/20 border border-teal-500/30 shadow-[0_0_15px_rgba(20,184,166,0.15)] flex items-center justify-center text-teal-300 transition-all hover:bg-teal-500/30">
@@ -170,14 +170,14 @@ export default function Sidebar() {
       </aside>
 
       <nav className="fixed bottom-0 left-0 right-0 z-40 md:hidden border-t border-slate-200/60 bg-white/80 backdrop-blur-xl shadow-[0_-5px_20px_-15px_rgba(0,0,0,0.1)]">
-        <div className="flex items-center justify-around p-2">
+        <div className="flex items-center gap-1 p-1.5">
           {visibleNavItems.map((item) => {
             const active = pathname.startsWith(item.href);
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex flex-col items-center justify-center gap-1.5 rounded-xl py-2 px-6 transition-all duration-200 ${
+                className={`flex-1 min-w-0 flex flex-col items-center justify-center gap-1 rounded-xl py-2 px-1.5 transition-all duration-200 ${
                   active
                     ? "text-teal-700 bg-teal-50/50"
                     : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"
@@ -186,7 +186,7 @@ export default function Sidebar() {
                 <div className={`${active ? "scale-110" : "scale-100"} transition-transform duration-200`}>
                   {item.icon}
                 </div>
-                <span className="text-[10px] font-semibold tracking-wide">{item.label}</span>
+                <span className="text-[9px] font-semibold tracking-wide truncate max-w-full">{item.label}</span>
                 {item.href === "/notifications" && unreadCount > 0 && (
                   <span className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
                     {unreadCount}

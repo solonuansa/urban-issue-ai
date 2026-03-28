@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { motion } from "framer-motion";
 import type { Variants } from "framer-motion";
 import { submitReport, type SubmitReportResponse } from "../services/api";
@@ -235,7 +236,7 @@ export default function ReportForm() {
       animate="show" 
       variants={containerVariants} 
       onSubmit={handleSubmit} 
-      className="space-y-6 pb-8 max-w-2xl mx-auto"
+      className="space-y-6 pb-8 max-w-3xl mx-auto"
     >
       <motion.section variants={itemVariants} className="app-card glass-panel p-5 md:p-7 shadow-sm">
         <StepBadge index="1" title="Upload Evidence" />
@@ -261,7 +262,9 @@ export default function ReportForm() {
         >
           {preview ? (
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="relative">
-              <img src={preview} alt="Preview" className="w-full h-[280px] object-cover" />
+              <div className="relative w-full h-[280px]">
+                <Image src={preview} alt="Preview" fill unoptimized className="object-cover" sizes="(max-width: 768px) 100vw, 768px" />
+              </div>
               <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
               <div className="absolute bottom-4 right-4 pointer-events-auto">
                 <button
@@ -274,7 +277,7 @@ export default function ReportForm() {
                     setImage(null);
                     setPreview(null);
                   }}
-                  className="rounded-lg border border-white/20 bg-white/20 backdrop-blur-md px-4 py-2 text-xs font-bold text-white hover:bg-white/30 transition-all shadow-lg flex items-center gap-2"
+                  className="rounded-lg border border-white/20 bg-white/20 backdrop-blur-md px-3 py-2 text-[11px] sm:text-xs font-bold text-white hover:bg-white/30 transition-all shadow-lg flex items-center gap-2"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                   Replace photo
@@ -321,7 +324,7 @@ export default function ReportForm() {
 
       <motion.section variants={itemVariants} className="app-card glass-panel p-5 md:p-7 shadow-sm">
         <StepBadge index="3" title="Road Context" />
-        <div className="grid sm:grid-cols-2 gap-3.5 mt-2">
+        <div className="grid sm:grid-cols-2 gap-3 mt-2">
           {LOCATION_PRESETS.map((preset, idx) => (
             <button
               key={preset.label}
@@ -330,7 +333,7 @@ export default function ReportForm() {
                 setSelectedPreset(idx);
                 setLocationImportance(preset.value);
               }}
-              className={`relative rounded-xl border p-4 text-left transition-all duration-200 overflow-hidden ${
+              className={`relative rounded-xl border p-3.5 sm:p-4 text-left transition-all duration-200 overflow-hidden ${
                 selectedPreset === idx
                   ? "border-teal-500 bg-teal-50/50 shadow-[0_0_15px_rgba(20,184,166,0.1)] scale-[1.02]"
                   : "border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50"
@@ -371,7 +374,7 @@ export default function ReportForm() {
         variants={itemVariants}
         type="submit"
         disabled={isSubmitDisabled}
-        className="relative w-full rounded-2xl bg-teal-700 text-white py-4 text-sm font-bold tracking-wide overflow-hidden shadow-lg shadow-teal-900/20 hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
+        className="relative w-full rounded-2xl bg-teal-700 text-white py-3.5 sm:py-4 text-sm font-bold tracking-wide overflow-hidden shadow-lg shadow-teal-900/20 hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
       >
         {loading ? (
           <span className="flex items-center justify-center gap-2.5">

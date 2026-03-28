@@ -7,6 +7,7 @@ import { BellRing, CheckCheck, RefreshCw } from "lucide-react";
 
 import { clearAuthSession, getAuthUser } from "@/lib/auth";
 import {
+  checkBackendHealth,
   getNotifications,
   markAllNotificationsRead,
   markNotificationRead,
@@ -35,6 +36,11 @@ export default function NotificationsPage() {
   const [pageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
+  const [healthChecking, setHealthChecking] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -76,6 +82,12 @@ export default function NotificationsPage() {
     setPage(1);
   }, [typeFilter, unreadOnly]);
 
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => setError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   const markRead = async (item: NotificationItem) => {
     if (item.is_read) return;
     setBusyId(item.id);
@@ -83,6 +95,10 @@ export default function NotificationsPage() {
       await markNotificationRead(item.id);
       setItems((prev) => prev.map((n) => (n.id === item.id ? { ...n, is_read: true } : n)));
       setUnreadCount((prev) => Math.max(0, prev - 1));
+      setError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to mark notification as read.";
+      setError(message);
     } finally {
       setBusyId(null);
     }
@@ -94,8 +110,33 @@ export default function NotificationsPage() {
       await markAllNotificationsRead();
       setItems((prev) => prev.map((n) => ({ ...n, is_read: true })));
       setUnreadCount(0);
+      setError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to mark all notifications as read.";
+      setError(message);
     } finally {
       setMarkAllLoading(false);
+    }
+  };
+
+  const runHealthCheck = async () => {
+    setHealthChecking(true);
+    try {
+      const res = await checkBackendHealth();
+      const checkedAt = new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      setHealthStatus({
+        ok: res.status === "ok",
+        message: `Backend reachable (status: ${res.status}) - checked at ${checkedAt}.`,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to reach backend health endpoint.";
+      setHealthStatus({ ok: false, message });
+      setError(message);
+    } finally {
+      setHealthChecking(false);
     }
   };
 
@@ -110,10 +151,10 @@ export default function NotificationsPage() {
               {unreadCount} unread notification{unreadCount !== 1 ? "s" : ""}.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full md:w-auto gap-2">
             <button
               onClick={fetchData}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              className="inline-flex flex-1 md:flex-none items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
               Refresh
@@ -121,10 +162,18 @@ export default function NotificationsPage() {
             <button
               onClick={markAll}
               disabled={markAllLoading || unreadCount === 0}
-              className="inline-flex items-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+              className="inline-flex flex-1 md:flex-none items-center justify-center gap-2 rounded-xl bg-teal-700 px-3 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
             >
               <CheckCheck className="w-4 h-4" />
               Mark All Read
+            </button>
+            <button
+              onClick={runHealthCheck}
+              disabled={healthChecking}
+              className="inline-flex flex-1 md:flex-none items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              <RefreshCw className={`w-4 h-4 ${healthChecking ? "animate-spin" : ""}`} />
+              Check backend health
             </button>
           </div>
         </div>
@@ -142,7 +191,7 @@ export default function NotificationsPage() {
               {f.label}
             </button>
           ))}
-          <label className="ml-auto inline-flex items-center gap-2 text-xs text-slate-600">
+          <label className="inline-flex md:ml-auto items-center gap-2 text-xs text-slate-600">
             <input
               type="checkbox"
               checked={unreadOnly}
@@ -154,8 +203,42 @@ export default function NotificationsPage() {
       </section>
 
       {error && (
-        <section className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
-          {error}
+        <section className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p>{error}</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchData}
+              className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+            >
+              Retry
+            </button>
+            <button
+              onClick={() => setError(null)}
+              className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        </section>
+      )}
+
+      {healthStatus && (
+        <section
+          className={`rounded-2xl px-5 py-3 text-sm flex items-center justify-between gap-3 ${
+            healthStatus.ok
+              ? "border border-teal-200 bg-teal-50 text-teal-800"
+              : "border border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <p>{healthStatus.message}</p>
+          <button
+            onClick={() => setHealthStatus(null)}
+            className={`rounded-md border bg-white px-2.5 py-1 text-xs font-semibold ${
+              healthStatus.ok ? "border-teal-200 text-teal-700" : "border-amber-200 text-amber-700"
+            }`}
+          >
+            Close
+          </button>
         </section>
       )}
 
